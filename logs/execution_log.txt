@@ -1,0 +1,11 @@
+[22:51:16] Agent 1 (Summary Agent) created with priority=3, timeout=3, quota=1
+[22:52:24] Agent 2 (Summary Agent) created with priority=1, timeout=3, quota=1
+[22:52:40] Agent 3 (Summary Agent) created with priority=3, timeout=3, quota=1
+[22:55:18] FCFS scheduler started
+[22:55:18] Agent 1 (Summary Agent) started
+[22:55:19] Agent 1 (Summary Agent) completed
+[22:55:19] Agent 2 (Summary Agent) started
+[22:55:20] Agent 2 (Summary Agent) completed
+[22:55:20] Agent 3 (Summary Agent) started
+[22:55:21] Agent 3 (Summary Agent) completed
+[22:55:21] FCFS scheduler finished
