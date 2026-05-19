@@ -1,0 +1,25 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: mini-agent-os:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Docker-out-of-Docker: app spawns sibling sandbox containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/app/logs
+    depends_on:
+      sandbox-build:
+        condition: service_completed_successfully
+
+  # Build-only sidecar so the sandbox image exists before the app runs
+  sandbox-build:
+    build:
+      context: .
+      dockerfile: docker/sandbox.Dockerfile
+    image: mini-agent-os-sandbox:latest
+    command: ["echo", "sandbox image built"]
