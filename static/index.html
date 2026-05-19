@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mini Agent OS — GarbageCollector</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Mini Agent OS</h1>
+    <p>OS-inspired runtime for LLM agents · sandboxed code execution · pipelines · team <strong>GarbageCollector</strong></p>
+  </header>
+
+  <section>
+    <h2>Scheduling policy (live)</h2>
+    <select id="policy">
+      <option value="fcfs">FCFS</option>
+      <option value="priority">Priority (non-preemptive)</option>
+    </select>
+    <span id="policy-status"></span>
+  </section>
+
+  <section class="create">
+    <h2>Create agent</h2>
+    <form id="create-form">
+      <input name="name" placeholder="name" required />
+      <textarea name="prompt" placeholder="prompt — use {INPUT} placeholder for pipeline input" required></textarea>
+      <select name="kind">
+        <option value="llm">llm</option>
+        <option value="code">code (sandboxed)</option>
+      </select>
+      <input name="priority" type="number" value="5" min="1" max="10" />
+      <input name="timeout" type="number" value="3" min="1" max="30" />
+      <input name="pipe_to" type="number" placeholder="pipe_to (optional downstream id)" />
+      <button type="submit">Create</button>
+    </form>
+  </section>
+
+  <section class="run">
+    <button id="clear">Clear all</button>
+  </section>
+
+  <section>
+    <h2>Agents</h2>
+    <table id="agents">
+      <thead><tr>
+        <th>ID</th><th>Name</th><th>Kind</th><th>State</th><th>Priority</th>
+        <th>Pipe to</th><th>Result</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Logs</h2>
+    <pre id="logs"></pre>
+  </section>
+
+  <section class="simulator">
+    <h2>Scheduler simulator (Gantt)</h2>
+    <p class="hint">
+      Compute textbook scheduling — including preemptive Round Robin which the live runtime
+      cannot do because LLM/Docker calls are non-preemptable.
+    </p>
+    <div class="sim-controls">
+      <label>Policy
+        <select id="sim-policy">
+          <option value="fcfs">FCFS</option>
+          <option value="priority">Priority (non-preemptive)</option>
+          <option value="rr">Round Robin</option>
+        </select>
+      </label>
+      <label>Quantum (RR only)
+        <input id="sim-quantum" type="number" value="2" min="1" />
+      </label>
+      <button id="sim-run">Run simulation</button>
+    </div>
+    <p class="hint">Jobs (one per line: <code>id burst arrival priority</code>)</p>
+    <textarea id="sim-jobs" rows="5">A 5 0 1
+B 3 0 1
+C 4 2 1</textarea>
+    <div id="sim-gantt"></div>
+  </section>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>
