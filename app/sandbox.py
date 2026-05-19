@@ -60,7 +60,7 @@ class Sandbox:
         except subprocess.TimeoutExpired as e:
             return SandboxResult(
                 exit_code=-1,
-                stdout=e.stdout.decode() if e.stdout else "",
-                stderr=e.stderr.decode() if e.stderr else "",
+                stdout=e.stdout if e.stdout else "",
+                stderr=e.stderr if e.stderr else "",
                 timed_out=True,
             )
