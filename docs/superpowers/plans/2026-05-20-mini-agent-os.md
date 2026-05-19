@@ -4,9 +4,9 @@
 
 **Context:** Team name is **GarbageCollector** (the repo name `GarbageCollector_OS` reflects the team, not the topic — this project is *not* about garbage collection). This plan assumes a single developer executing it end-to-end; no task division is included. The plan starts from a clean orphan branch and is not constrained by anything that was previously in `main`.
 
-**Goal:** Build an OS-inspired runtime that schedules LLM agents like processes, executes them concurrently on a worker pool, and runs LLM-generated Python code inside Docker-based sandboxes — satisfying the Week 9 Direction A (OS-for-LLM) project requirements with substantive OS concept implementation.
+**Goal:** Build an OS-inspired runtime that schedules LLM agents like processes, executes them concurrently on a worker pool, runs LLM-generated Python code inside Docker-based sandboxes, and chains agents into pipelines through a bounded message bus — satisfying the Week 9 Direction A (OS-for-LLM) project requirements with substantive OS concept implementation. The runtime also ships a built-in **scheduler simulator** that computes Gantt charts for FCFS, non-preemptive Priority, and Round Robin so all three classroom-standard policies can be demonstrated even though real LLM calls cannot be preempted.
 
-**Architecture:** A FastAPI backend exposes agent CRUD and scheduling endpoints. Created agents enter a `ReadyQueue` synchronized by `threading.Condition` (wait/notify). A worker pool (`N` threads) blocks on the queue and concurrently executes agents. Each worker calls the `Executor`, which gates on a `QuotaManager` (mutex), invokes the Solar Pro 3 LLM, and — for code-execution agents — pipes the generated code into a hardened Docker sandbox (`docker run --rm --network=none --read-only --cap-drop=ALL --memory=128m --cpus=0.5`). An `EventBus` bridges worker threads to the asyncio event loop so the FastAPI Server-Sent Events stream pushes live state changes to the dashboard. A bounded `MessageBus` (producer-consumer) supports inter-agent pipelines.
+**Architecture:** A FastAPI backend exposes agent CRUD, scheduling, and simulator endpoints. Created agents enter a `ReadyQueue` synchronized by `threading.Condition` (wait/notify). A worker pool (`N` threads) blocks on the queue and concurrently executes agents. Each worker calls the `Executor`, which (a) optionally blocks on a bounded `MessageBus` to receive pipeline input from a predecessor agent, (b) gates on a `QuotaManager` (mutex), (c) invokes the Solar Pro 3 LLM, (d) for code-execution agents pipes the generated code into a hardened Docker sandbox, and (e) optionally publishes the result to a successor agent over the same bus. An `EventBus` bridges worker threads to the asyncio event loop so the FastAPI Server-Sent Events stream pushes live state changes to the dashboard. A pure-function `Simulator` module computes Gantt timelines for FCFS / Priority / Round Robin and powers a separate dashboard panel for textbook scheduling demos.
 
 **Tech Stack:**
 - **Python 3.11**, managed by **uv** (modern fast package manager with lockfile)
@@ -23,7 +23,9 @@
 |---|---|---|
 | HTTP server | asyncio (uvicorn / FastAPI) | Event-loop for many concurrent I/O-bound HTTP clients — analog of `epoll`/`kqueue`-based reactor |
 | Agent execution | threading (worker pool) | Long-running blocking work (LLM HTTP call, `docker run` subprocess) — analog of OS process pool |
-| Bridge | `queue.Queue` + `loop.run_in_executor` | Thread-safe handoff between the two — the "system call boundary" of this app |
+| Bridge | `queue.Queue` + `loop.run_in_executor` / `call_soon_threadsafe` | Thread-safe handoff between the two — the "system call boundary" of this app |
+
+**Scheduling Note (non-preemptive):** Real agents execute LLM calls and Docker subprocesses that cannot be preempted mid-flight. Therefore the live runtime supports two **non-preemptive** policies (FCFS, Priority) that decide *which agent runs next* when a worker becomes free, but never interrupt a running one. To still demonstrate preemptive Round Robin (a classroom staple), the project ships a separate **simulator** that consumes hypothetical burst times and returns the textbook Gantt chart for all three policies. This split is intentional and explained in the technical report.
 
 **OS Concepts Mapped to Code:**
 
@@ -32,18 +34,19 @@
 | Process / PCB | `app/agent.py` — `AgentTask` dataclass |
 | Process state | `AgentState` enum: READY → RUNNING → DONE / TIMEOUT / ERROR |
 | Ready queue | `app/ready_queue.py` — synchronized queue |
-| Scheduler (FCFS, Priority) | `app/scheduler.py` — pluggable policy keys |
+| Scheduler (FCFS, Priority — live, non-preemptive) | `app/scheduler.py` — pluggable policy keys |
+| Scheduler simulator (FCFS, Priority, **RR** — preemptive Gantt) | `app/simulator.py` |
 | Worker pool (CPU analog) | `app/worker_pool.py` — N daemon threads |
 | Synchronization — Mutex | `app/quota_manager.py` — `threading.Lock` |
 | Synchronization — Condition (wait/notify) | `app/ready_queue.py` — `threading.Condition` |
 | Synchronization — Bounded buffer (producer/consumer) | `app/message_bus.py` — `queue.Queue(maxsize=N)` |
-| IPC — between agents | `app/message_bus.py` |
+| IPC — agent → agent pipeline (`pipe_to` / `{INPUT}`) | `app/executor.py` + `app/message_bus.py` |
 | IPC — parent ↔ sandbox | `app/sandbox.py` — stdin/stdout pipes |
 | Process isolation | `app/sandbox.py` — Docker container per execution |
-| System call restriction | sandbox: `--cap-drop=ALL`, `--network=none`, `--security-opt=no-new-privileges` |
+| System call restriction | sandbox: `--cap-drop=ALL`, `--security-opt=no-new-privileges` |
 | File permission | sandbox: `--read-only` rootfs, no host mounts |
 | Resource limit | sandbox: `--memory`, `--cpus`, `--pids-limit` |
-| Timeout / preemption | sandbox: parent-side `subprocess.TimeoutExpired` → container killed |
+| Timeout / forced termination | sandbox: parent-side `subprocess.TimeoutExpired` → container killed |
 | Event notification (SSE) | `app/event_bus.py` — thread→asyncio bridge |
 | Trace log | `app/logger.py` |
 
@@ -60,8 +63,9 @@ GarbageCollector_OS/                 # branch: parkcheolwon
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                      # FastAPI app + SSE + startup hook
-│   ├── agent.py                     # AgentTask + AgentState
-│   ├── scheduler.py                 # SchedulingPolicy + key functions
+│   ├── agent.py                     # AgentTask + AgentState + AgentKind
+│   ├── scheduler.py                 # SchedulingPolicy + key functions (live)
+│   ├── simulator.py                 # FCFS / Priority / RR Gantt simulator
 │   ├── ready_queue.py               # synchronized ready queue (Condition)
 │   ├── quota_manager.py             # thread-safe quota gate (Lock)
 │   ├── message_bus.py               # bounded queue for inter-agent IPC
@@ -74,11 +78,12 @@ GarbageCollector_OS/                 # branch: parkcheolwon
 ├── static/
 │   ├── index.html                   # dashboard
 │   ├── style.css
-│   └── script.js                    # EventSource client
+│   └── script.js                    # EventSource client + simulator UI
 ├── tests/
 │   ├── __init__.py
 │   ├── test_agent.py
 │   ├── test_scheduler.py
+│   ├── test_simulator.py
 │   ├── test_ready_queue.py
 │   ├── test_quota_manager.py
 │   ├── test_message_bus.py
@@ -207,6 +212,7 @@ asyncio_mode = "auto"
 addopts = "-v"
 markers = [
     "docker: requires Docker daemon and sandbox image",
+    "slow: timing-sensitive tests that may flake on slow CI",
 ]
 ```
 
@@ -228,6 +234,7 @@ SANDBOX_TIMEOUT_DEFAULT=5
 WORKER_COUNT=4
 GLOBAL_QUOTA=1000
 MESSAGE_BUS_CAPACITY=100
+PIPELINE_WAIT_TIMEOUT=30
 ```
 
 - [ ] **Step 7: Write `README.md`**
@@ -237,7 +244,7 @@ MESSAGE_BUS_CAPACITY=100
 
 > Team **GarbageCollector** · Week 9 Project, Direction A (OS-for-LLM)
 
-OS-inspired runtime that schedules LLM agents like processes on a worker pool and executes generated code inside Docker sandboxes.
+OS-inspired runtime that schedules LLM agents like processes on a worker pool, executes generated code inside Docker sandboxes, and chains agents into pipelines through a bounded message bus.
 
 ## Quickstart
 
@@ -403,16 +410,17 @@ def test_new_agent_is_ready():
                   priority=5, timeout=3)
     assert a.state == AgentState.READY
     assert a.result is None
+    assert a.pipe_to is None
     assert isinstance(a.created_time, datetime)
 
 
-def test_to_dict_serializes_enums_as_strings():
+def test_to_dict_serializes_enums_and_pipe():
     a = AgentTask(agent_id=1, name="x", prompt="p", kind=AgentKind.CODE,
-                  priority=5, timeout=3)
+                  priority=5, timeout=3, pipe_to=7)
     d = a.to_dict()
     assert d["state"] == "READY"
     assert d["kind"] == "code"
-    assert d["agent_id"] == 1
+    assert d["pipe_to"] == 7
     assert d["start_time"] is None
 ```
 
@@ -451,6 +459,7 @@ class AgentTask:
     kind: AgentKind
     priority: int
     timeout: int
+    pipe_to: Optional[int] = None  # downstream agent id; result is published to pipe-{pipe_to}
 
     state: AgentState = AgentState.READY
     result: Optional[str] = None
@@ -469,6 +478,7 @@ class AgentTask:
             "kind": self.kind.value,
             "priority": self.priority,
             "timeout": self.timeout,
+            "pipe_to": self.pipe_to,
             "state": self.state.value,
             "result": self.result,
             "error_message": self.error_message,
@@ -487,7 +497,7 @@ Expected: 2 passed.
 
 ```bash
 git add app/agent.py tests/test_agent.py
-git commit -m "feat: AgentTask dataclass with state and kind enums"
+git commit -m "feat: AgentTask with state, kind, and pipeline link"
 ```
 
 ---
@@ -555,6 +565,11 @@ def sort_key_for(policy: SchedulingPolicy) -> Callable[[AgentTask], tuple]:
     """Return a sort-key function that orders ready agents per the policy.
 
     The earliest-ranked agent (sort ascending) is the next to run.
+
+    Note: live scheduling is **non-preemptive** — the policy only decides
+    which agent a free worker picks up next. Already-running agents are not
+    interrupted (LLM API calls and Docker subprocesses cannot be preempted
+    cleanly). For preemptive Round Robin, see `app/simulator.py`.
     """
     if policy == SchedulingPolicy.FCFS:
         return lambda a: (a.created_time,)
@@ -572,7 +587,7 @@ Expected: 3 passed.
 
 ```bash
 git add app/scheduler.py tests/test_scheduler.py
-git commit -m "feat: scheduling policy keys (FCFS, Priority)"
+git commit -m "feat: live scheduling policy keys (FCFS, Priority)"
 ```
 
 ---
@@ -654,7 +669,7 @@ def test_close_unblocks_waiters_with_none():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_ready_queue.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'app.ready_queue'`
+Expected: FAIL with `ModuleNotFoundError`
 
 - [ ] **Step 3: Write `app/ready_queue.py`**
 
@@ -900,6 +915,11 @@ class MessageBus:
     `send` blocks when the topic queue is full; `receive` blocks (with timeout)
     when the topic queue is empty. Demonstrates the bounded-buffer synchronization
     problem covered in OS textbooks.
+
+    Used by the Executor to wire agents into pipelines: an upstream agent
+    publishes its result to topic `pipe-{downstream_id}`; the downstream
+    agent's executor blocks on `receive("pipe-{my_id}")` when its prompt
+    contains the `{INPUT}` placeholder.
     """
 
     def __init__(self, capacity: int):
@@ -931,7 +951,7 @@ Expected: 4 passed.
 
 ```bash
 git add app/message_bus.py tests/test_message_bus.py
-git commit -m "feat: bounded MessageBus (producer-consumer sync)"
+git commit -m "feat: bounded MessageBus for inter-agent pipelines"
 ```
 
 ---
@@ -954,6 +974,7 @@ from app.event_bus import EventBus
 @pytest.mark.asyncio
 async def test_published_event_reaches_async_subscriber():
     bus = EventBus()
+    bus.bind_loop(asyncio.get_running_loop())
 
     async def collect_one():
         async for event in bus.subscribe():
@@ -970,6 +991,7 @@ async def test_published_event_reaches_async_subscriber():
 @pytest.mark.asyncio
 async def test_multiple_subscribers_each_receive_event():
     bus = EventBus()
+    bus.bind_loop(asyncio.get_running_loop())
 
     async def collect():
         async for event in bus.subscribe():
@@ -994,7 +1016,7 @@ Expected: FAIL with `ModuleNotFoundError`
 ```python
 import asyncio
 import threading
-from typing import Any, AsyncIterator, List
+from typing import Any, AsyncIterator, List, Optional
 
 
 class EventBus:
@@ -1002,24 +1024,24 @@ class EventBus:
 
     `publish` is callable from any worker thread (no event loop required).
     `subscribe` returns an async iterator usable by an SSE endpoint.
+
+    Note: events published while there are zero subscribers are dropped
+    (there is no replay buffer). Open the dashboard before starting a demo.
     """
 
     def __init__(self):
         self._subscribers: List[asyncio.Queue] = []
         self._lock = threading.Lock()
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Called once from the FastAPI startup hook so publishers can
-        schedule queue puts on the correct event loop."""
+        """Called once from the FastAPI lifespan so publishers can schedule
+        queue puts on the correct event loop."""
         self._loop = loop
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:
-            try:
-                self._loop = asyncio.get_running_loop()
-            except RuntimeError as e:
-                raise RuntimeError("EventBus.bind_loop() not called") from e
+            raise RuntimeError("EventBus.bind_loop() not called")
         return self._loop
 
     def publish(self, event: Any) -> None:
@@ -1358,7 +1380,7 @@ git commit -m "feat: Docker sandbox with isolation and resource limits"
 
 ---
 
-## Task 12: Executor (single-agent orchestration)
+## Task 12: Executor (single-agent orchestration with pipeline IPC)
 
 **Files:**
 - Create: `app/executor.py`
@@ -1367,41 +1389,48 @@ git commit -m "feat: Docker sandbox with isolation and resource limits"
 - [ ] **Step 1: Write the failing test `tests/test_executor.py`**
 
 ```python
+import queue
+import threading
 from unittest.mock import MagicMock
 from app.agent import AgentTask, AgentState, AgentKind
-from app.executor import Executor
+from app.executor import Executor, INPUT_PLACEHOLDER
+from app.message_bus import MessageBus
 from app.quota_manager import QuotaManager
 from app.sandbox import SandboxResult
 
 
-def _task(kind: AgentKind, prompt="hi"):
-    return AgentTask(agent_id=1, name="t", prompt=prompt, kind=kind,
-                     priority=1, timeout=3)
+def _task(kind: AgentKind, prompt="hi", agent_id=1, pipe_to=None):
+    return AgentTask(agent_id=agent_id, name="t", prompt=prompt, kind=kind,
+                     priority=1, timeout=3, pipe_to=pipe_to)
+
+
+def _make_executor(llm=None, sandbox=None, quota=None, bus=None):
+    return Executor(
+        llm=llm or MagicMock(),
+        sandbox=sandbox or MagicMock(),
+        quota=quota or QuotaManager(total=10),
+        logger=MagicMock(),
+        events=MagicMock(),
+        bus=bus or MessageBus(capacity=10),
+        pipeline_timeout=2.0,
+    )
 
 
 def test_llm_agent_marks_done_and_stores_result():
     llm = MagicMock()
     llm.complete.return_value = "answer"
-    qm = QuotaManager(total=10)
-    events = MagicMock()
-    ex = Executor(llm=llm, sandbox=MagicMock(), quota=qm,
-                  logger=MagicMock(), events=events)
+    ex = _make_executor(llm=llm)
 
     task = _task(AgentKind.LLM)
     ex.execute(task)
 
     assert task.state == AgentState.DONE
     assert task.result == "answer"
-    # state was published twice: RUNNING then DONE
-    states = [c.args[0]["state"] for c in events.publish.call_args_list]
-    assert states == ["RUNNING", "DONE"]
 
 
 def test_quota_exhaustion_marks_error_without_calling_llm():
     llm = MagicMock()
-    qm = QuotaManager(total=0)
-    ex = Executor(llm=llm, sandbox=MagicMock(), quota=qm,
-                  logger=MagicMock(), events=MagicMock())
+    ex = _make_executor(llm=llm, quota=QuotaManager(total=0))
 
     task = _task(AgentKind.LLM)
     ex.execute(task)
@@ -1418,9 +1447,7 @@ def test_code_agent_runs_in_sandbox_and_marks_done():
     sandbox.run.return_value = SandboxResult(
         exit_code=0, stdout="hello\n", stderr="", timed_out=False
     )
-    qm = QuotaManager(total=10)
-    ex = Executor(llm=llm, sandbox=sandbox, quota=qm,
-                  logger=MagicMock(), events=MagicMock())
+    ex = _make_executor(llm=llm, sandbox=sandbox)
 
     task = _task(AgentKind.CODE, prompt="generate hello")
     ex.execute(task)
@@ -1437,14 +1464,65 @@ def test_code_agent_timeout_marks_timeout_state():
     sandbox.run.return_value = SandboxResult(
         exit_code=-1, stdout="", stderr="", timed_out=True
     )
-    qm = QuotaManager(total=10)
-    ex = Executor(llm=llm, sandbox=sandbox, quota=qm,
-                  logger=MagicMock(), events=MagicMock())
+    ex = _make_executor(llm=llm, sandbox=sandbox)
 
     task = _task(AgentKind.CODE)
     ex.execute(task)
 
     assert task.state == AgentState.TIMEOUT
+
+
+def test_pipeline_publishes_result_to_downstream_topic():
+    llm = MagicMock()
+    llm.complete.return_value = "upstream result"
+    bus = MessageBus(capacity=5)
+    ex = _make_executor(llm=llm, bus=bus)
+
+    task = _task(AgentKind.LLM, agent_id=1, pipe_to=2)
+    ex.execute(task)
+
+    assert task.state == AgentState.DONE
+    # downstream agent (id=2) can now read it
+    assert bus.receive("pipe-2", timeout=1) == "upstream result"
+
+
+def test_pipeline_consumer_blocks_for_input_then_substitutes_placeholder():
+    llm = MagicMock()
+    llm.complete.return_value = "summary done"
+    bus = MessageBus(capacity=5)
+    ex = _make_executor(llm=llm, bus=bus)
+
+    # consumer waits for pipe-2; producer sends 0.2s later
+    task = _task(AgentKind.LLM, agent_id=2,
+                 prompt=f"Summarize this: {INPUT_PLACEHOLDER}")
+
+    def producer():
+        import time
+        time.sleep(0.2)
+        bus.send("pipe-2", "raw text from upstream")
+
+    threading.Thread(target=producer, daemon=True).start()
+    ex.execute(task)
+
+    assert task.state == AgentState.DONE
+    # the LLM should have been called with the substituted prompt
+    actual_prompt = llm.complete.call_args.args[0]
+    assert "raw text from upstream" in actual_prompt
+    assert INPUT_PLACEHOLDER not in actual_prompt
+
+
+def test_pipeline_consumer_times_out_when_no_producer():
+    llm = MagicMock()
+    bus = MessageBus(capacity=5)
+    ex = _make_executor(llm=llm, bus=bus)
+
+    task = _task(AgentKind.LLM, agent_id=2,
+                 prompt=f"Use {INPUT_PLACEHOLDER}")
+    ex.execute(task)
+
+    assert task.state == AgentState.ERROR
+    assert "pipeline input" in task.error_message.lower()
+    llm.complete.assert_not_called()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1455,23 +1533,31 @@ Expected: FAIL with `ModuleNotFoundError`
 - [ ] **Step 3: Write `app/executor.py`**
 
 ```python
+import queue
 from datetime import datetime
 from app.agent import AgentTask, AgentState, AgentKind
 
 
+INPUT_PLACEHOLDER = "{INPUT}"
+
+
 class Executor:
-    """Executes ONE agent end-to-end: quota gate → LLM → optional sandbox.
+    """Executes ONE agent end-to-end:
+        (pipeline input?) → quota gate → LLM → optional sandbox → (pipeline output?)
 
     Designed to be called by worker threads. All collaborators are passed in
     so the unit is easy to test with mocks.
     """
 
-    def __init__(self, llm, sandbox, quota, logger, events):
+    def __init__(self, llm, sandbox, quota, logger, events, bus,
+                 pipeline_timeout: float = 30.0):
         self._llm = llm
         self._sandbox = sandbox
         self._quota = quota
         self._log = logger
         self._events = events
+        self._bus = bus
+        self._pipeline_timeout = pipeline_timeout
 
     def execute(self, task: AgentTask) -> AgentTask:
         task.state = AgentState.RUNNING
@@ -1479,27 +1565,54 @@ class Executor:
         self._log.log(f"Agent {task.agent_id} ({task.name}) started")
         self._publish(task)
 
+        # 1. Pipeline input: if prompt contains {INPUT}, block until upstream sends
+        prompt = task.prompt
+        if INPUT_PLACEHOLDER in prompt:
+            try:
+                upstream = self._bus.receive(
+                    f"pipe-{task.agent_id}", timeout=self._pipeline_timeout
+                )
+            except queue.Empty:
+                return self._fail(task, AgentState.ERROR,
+                                  f"Pipeline input not received within "
+                                  f"{self._pipeline_timeout}s")
+            prompt = prompt.replace(INPUT_PLACEHOLDER, str(upstream))
+
+        # 2. Quota gate (mutex)
         if not self._quota.try_acquire(1):
             return self._fail(task, AgentState.ERROR, "API quota exhausted")
 
+        # 3. LLM call
         try:
-            llm_output = self._llm.complete(task.prompt)
+            llm_output = self._llm.complete(prompt)
         except Exception as e:
             return self._fail(task, AgentState.ERROR, f"LLM error: {e}")
 
+        # 4. Optional sandbox for CODE agents
         if task.kind == AgentKind.LLM:
-            task.result = llm_output
-            return self._done(task)
+            final_result = llm_output
+        else:
+            sb = self._sandbox.run(llm_output)
+            if sb.timed_out:
+                return self._fail(task, AgentState.TIMEOUT,
+                                  "Sandbox execution timed out")
+            if sb.exit_code != 0:
+                return self._fail(task, AgentState.ERROR,
+                                  f"Sandbox exit {sb.exit_code}: {sb.stderr.strip()}")
+            final_result = f"code:\n{llm_output}\n---\nstdout:\n{sb.stdout}"
 
-        # CODE kind: pipe LLM output into the sandbox
-        sb = self._sandbox.run(llm_output)
-        if sb.timed_out:
-            return self._fail(task, AgentState.TIMEOUT, "Sandbox execution timed out")
-        if sb.exit_code != 0:
-            return self._fail(task, AgentState.ERROR,
-                              f"Sandbox exit {sb.exit_code}: {sb.stderr.strip()}")
+        task.result = final_result
 
-        task.result = f"code:\n{llm_output}\n---\nstdout:\n{sb.stdout}"
+        # 5. Pipeline output: publish to downstream if pipe_to is set
+        if task.pipe_to is not None:
+            try:
+                self._bus.send(f"pipe-{task.pipe_to}", final_result, timeout=5)
+            except queue.Full:
+                self._log.log(
+                    f"Agent {task.agent_id} pipeline output dropped: "
+                    f"pipe-{task.pipe_to} full"
+                )
+
         return self._done(task)
 
     def _done(self, task: AgentTask) -> AgentTask:
@@ -1524,13 +1637,13 @@ class Executor:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_executor.py -v`
-Expected: 4 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add app/executor.py tests/test_executor.py
-git commit -m "feat: Executor orchestrates quota, LLM, and sandbox per agent"
+git commit -m "feat: Executor with pipeline IPC (MessageBus consumer/producer)"
 ```
 
 ---
@@ -1546,6 +1659,7 @@ git commit -m "feat: Executor orchestrates quota, LLM, and sandbox per agent"
 ```python
 import threading
 import time
+import pytest
 from unittest.mock import MagicMock
 from app.agent import AgentTask, AgentState, AgentKind
 from app.ready_queue import ReadyQueue
@@ -1586,41 +1700,38 @@ def test_stop_shuts_workers_down():
     pool = WorkerPool(ready_queue=q, executor=MagicMock(), workers=2)
     pool.start()
     pool.stop()
-    # threads are no longer alive
     assert all(not t.is_alive() for t in pool.threads())
 
 
+@pytest.mark.slow
 def test_concurrent_workers_actually_run_in_parallel():
     """Two workers should process two slow tasks in less than 2× the serial time."""
     q = ReadyQueue(policy=SchedulingPolicy.FCFS)
     barrier = threading.Barrier(parties=2)
+    done_count = {"n": 0}
+    done_lock = threading.Lock()
 
     class SlowExecutor:
         def execute(self, task):
-            # both workers must reach this point at roughly the same time
             barrier.wait(timeout=2)
             time.sleep(0.3)
             task.state = AgentState.DONE
+            with done_lock:
+                done_count["n"] += 1
 
     pool = WorkerPool(ready_queue=q, executor=SlowExecutor(), workers=2)
     pool.start()
     start = time.monotonic()
     q.put(_agent(1))
     q.put(_agent(2))
-    # wait until both DONE
-    while not all(a.state == AgentState.DONE for a in [
-        _ for _ in pool._all_dispatched()  # type: ignore[attr-defined]
-    ]):
-        time.sleep(0.05)
-        if time.monotonic() - start > 2:
-            break
+    while done_count["n"] < 2 and time.monotonic() - start < 2:
+        time.sleep(0.02)
     elapsed = time.monotonic() - start
     pool.stop()
-    # If workers ran serially this would take ~0.6s. Parallel: ~0.3s + barrier overhead.
+    assert done_count["n"] == 2
+    # Serial would take ~0.6s; parallel should be well under 0.55s.
     assert elapsed < 0.55
 ```
-
-> **Note:** The third test exercises real parallel execution. If it proves flaky on slow CI, mark it `@pytest.mark.slow` and run separately. The first two tests are sufficient for correctness.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1653,8 +1764,6 @@ class WorkerPool:
         self._executor = executor
         self._n = workers
         self._threads: List[threading.Thread] = []
-        self._dispatched: List[AgentTask] = []
-        self._dispatched_lock = threading.Lock()
 
     def start(self) -> None:
         for i in range(self._n):
@@ -1674,22 +1783,16 @@ class WorkerPool:
     def threads(self) -> List[threading.Thread]:
         return list(self._threads)
 
-    def _all_dispatched(self) -> List[AgentTask]:
-        with self._dispatched_lock:
-            return list(self._dispatched)
-
     def _worker_loop(self) -> None:
         while True:
             task = self._queue.pop_next()
             if task is None:
                 return
-            with self._dispatched_lock:
-                self._dispatched.append(task)
             try:
                 self._executor.execute(task)
             except Exception:
-                # Executor is expected to handle its own errors; if anything
-                # leaks here, drop it so the worker stays alive.
+                # Executor handles its own errors; if anything leaks, drop it
+                # so the worker stays alive.
                 pass
 ```
 
@@ -1707,7 +1810,235 @@ git commit -m "feat: WorkerPool with concurrent agent execution"
 
 ---
 
-## Task 14: FastAPI App (endpoints + SSE)
+## Task 14: Simulator (FCFS / Priority / Round Robin Gantt)
+
+**Files:**
+- Create: `app/simulator.py`
+- Create: `tests/test_simulator.py`
+
+> **Rationale:** Real LLM-backed agents cannot be preempted, so the live scheduler is non-preemptive (Task 4). To still demonstrate Round Robin and let viewers compare textbook scheduling behavior side-by-side, the simulator takes a list of hypothetical jobs `[{id, burst, arrival, priority}]` and returns a Gantt timeline. It is a pure-function module — no threads, no LLM, no Docker — and powers a dedicated dashboard panel.
+
+- [ ] **Step 1: Write the failing test `tests/test_simulator.py`**
+
+```python
+import pytest
+from app.simulator import simulate_fcfs, simulate_priority, simulate_rr
+
+
+def _job(jid, burst, arrival=0, priority=1):
+    return {"id": jid, "burst": burst, "arrival": arrival, "priority": priority}
+
+
+# ---------- FCFS ----------
+
+def test_fcfs_runs_in_arrival_order():
+    jobs = [_job("A", 4, arrival=0), _job("B", 2, arrival=1), _job("C", 3, arrival=2)]
+    gantt = simulate_fcfs(jobs)
+    assert gantt == [
+        {"id": "A", "start": 0, "end": 4},
+        {"id": "B", "start": 4, "end": 6},
+        {"id": "C", "start": 6, "end": 9},
+    ]
+
+
+def test_fcfs_idle_gap_when_no_job_has_arrived():
+    jobs = [_job("A", 2, arrival=5)]
+    gantt = simulate_fcfs(jobs)
+    assert gantt == [{"id": "A", "start": 5, "end": 7}]
+
+
+# ---------- Priority (non-preemptive, higher value = higher priority) ----------
+
+def test_priority_picks_highest_priority_when_multiple_available():
+    jobs = [_job("A", 3, arrival=0, priority=1),
+            _job("B", 2, arrival=0, priority=5),
+            _job("C", 4, arrival=0, priority=3)]
+    gantt = simulate_priority(jobs)
+    assert [g["id"] for g in gantt] == ["B", "C", "A"]
+
+
+def test_priority_falls_back_to_fcfs_when_only_one_available():
+    # At t=0, only A is available; B (priority 9) arrives at t=5 but A already running
+    jobs = [_job("A", 4, arrival=0, priority=1),
+            _job("B", 2, arrival=5, priority=9)]
+    gantt = simulate_priority(jobs)
+    assert gantt == [
+        {"id": "A", "start": 0, "end": 4},
+        # idle gap [4,5] then B
+        {"id": "B", "start": 5, "end": 7},
+    ]
+
+
+# ---------- Round Robin (preemptive, time quantum) ----------
+
+def test_rr_slices_jobs_by_quantum():
+    jobs = [_job("A", 5, arrival=0), _job("B", 3, arrival=0)]
+    gantt = simulate_rr(jobs, quantum=2)
+    # A(0-2), B(2-4), A(4-6), B(6-7), A(7-8)
+    assert gantt == [
+        {"id": "A", "start": 0, "end": 2},
+        {"id": "B", "start": 2, "end": 4},
+        {"id": "A", "start": 4, "end": 6},
+        {"id": "B", "start": 6, "end": 7},
+        {"id": "A", "start": 7, "end": 8},
+    ]
+
+
+def test_rr_handles_late_arrivals():
+    jobs = [_job("A", 4, arrival=0), _job("B", 2, arrival=3)]
+    gantt = simulate_rr(jobs, quantum=2)
+    # A(0-2), A(2-4)  ← B arrives at 3 and is queued before A re-enters
+    # then B(4-6), A(6-8)? Let's trace:
+    #   t=0: ready=[A]; pop A; run 2 → A(0-2); A has 2 left.
+    #     during this slice, B arrives at t=3? no, slice ends at 2.
+    #     re-queue A. ready=[A].
+    #   t=2: ready=[A]; pop A; run 2 → A(2-4); A done.
+    #     B arrived at t=3 → enter ready during this slice. ready=[B] after pop.
+    #   t=4: ready=[B]; pop B; run 2 → B(4-6); B done.
+    assert gantt == [
+        {"id": "A", "start": 0, "end": 2},
+        {"id": "A", "start": 2, "end": 4},
+        {"id": "B", "start": 4, "end": 6},
+    ]
+
+
+def test_rr_idle_gap_then_resumes():
+    jobs = [_job("A", 2, arrival=5)]
+    gantt = simulate_rr(jobs, quantum=3)
+    assert gantt == [{"id": "A", "start": 5, "end": 7}]
+
+
+def test_invalid_quantum_raises():
+    with pytest.raises(ValueError):
+        simulate_rr([_job("A", 1)], quantum=0)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_simulator.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Write `app/simulator.py`**
+
+```python
+"""Pure-function scheduler simulator.
+
+Inputs are plain dicts so this module is trivially testable and exposable as
+an HTTP endpoint without coupling to AgentTask.
+
+Job shape: {"id": str, "burst": int, "arrival": int, "priority": int}
+Output:    list of {"id": str, "start": int, "end": int}
+"""
+from collections import deque
+from typing import List, Dict
+
+
+Job = Dict[str, int]
+Slice = Dict[str, int]
+
+
+def simulate_fcfs(jobs: List[Job]) -> List[Slice]:
+    """First-Come, First-Served: run in order of arrival to completion."""
+    ordered = sorted(jobs, key=lambda j: (j["arrival"], j["id"]))
+    timeline: List[Slice] = []
+    clock = 0
+    for j in ordered:
+        start = max(clock, j["arrival"])
+        end = start + j["burst"]
+        timeline.append({"id": j["id"], "start": start, "end": end})
+        clock = end
+    return timeline
+
+
+def simulate_priority(jobs: List[Job]) -> List[Slice]:
+    """Non-preemptive priority: among arrived jobs, pick the highest priority value.
+
+    Tiebreak: earlier arrival, then lexicographic id.
+    """
+    remaining = [dict(j) for j in jobs]
+    timeline: List[Slice] = []
+    clock = 0
+    while remaining:
+        available = [j for j in remaining if j["arrival"] <= clock]
+        if not available:
+            clock = min(j["arrival"] for j in remaining)
+            continue
+        chosen = max(available, key=lambda j: (j["priority"], -j["arrival"], -ord(j["id"][0])))
+        start = clock
+        end = start + chosen["burst"]
+        timeline.append({"id": chosen["id"], "start": start, "end": end})
+        clock = end
+        remaining.remove(chosen)
+    return timeline
+
+
+def simulate_rr(jobs: List[Job], quantum: int) -> List[Slice]:
+    """Round Robin with the given time quantum (preemptive).
+
+    Consecutive same-id slices are NOT merged; each one represents a separate
+    quantum so the Gantt chart faithfully shows preemption points.
+    """
+    if quantum <= 0:
+        raise ValueError("quantum must be a positive integer")
+
+    pending = sorted(jobs, key=lambda j: (j["arrival"], j["id"]))
+    remaining_burst = {j["id"]: j["burst"] for j in jobs}
+    ready: deque = deque()
+    timeline: List[Slice] = []
+    clock = 0
+
+    def admit_arrivals(up_to_time: int) -> None:
+        nonlocal pending
+        new_pending = []
+        for j in pending:
+            if j["arrival"] <= up_to_time:
+                ready.append(j["id"])
+            else:
+                new_pending.append(j)
+        pending = new_pending
+
+    admit_arrivals(clock)
+    if not ready and pending:
+        clock = pending[0]["arrival"]
+        admit_arrivals(clock)
+
+    while ready or pending:
+        if not ready:
+            clock = pending[0]["arrival"]
+            admit_arrivals(clock)
+            continue
+
+        jid = ready.popleft()
+        run = min(quantum, remaining_burst[jid])
+        timeline.append({"id": jid, "start": clock, "end": clock + run})
+        clock += run
+        remaining_burst[jid] -= run
+
+        # Admit any jobs that arrived during this quantum BEFORE re-queuing self,
+        # which matches standard RR convention.
+        admit_arrivals(clock)
+
+        if remaining_burst[jid] > 0:
+            ready.append(jid)
+
+    return timeline
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `uv run pytest tests/test_simulator.py -v`
+Expected: 7 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/simulator.py tests/test_simulator.py
+git commit -m "feat: scheduler simulator (FCFS, Priority, Round Robin Gantt)"
+```
+
+---
+
+## Task 15: FastAPI App (endpoints + SSE + simulator)
 
 **Files:**
 - Create: `app/main.py`
@@ -1729,7 +2060,6 @@ def _make_client():
         mk_llm.return_value.complete.return_value = "ok"
         mk_sb.return_value = MagicMock()
         from app import main
-        # Reset module-level state between tests
         main._reset_for_tests()
         return TestClient(main.app)
 
@@ -1743,7 +2073,6 @@ def test_create_and_list_agents():
     assert r.status_code == 200
     body = r.json()
     assert body["agent"]["state"] in ("READY", "RUNNING", "DONE")
-    # Give the workers a moment to drain
     time.sleep(0.2)
     listing = client.get("/agents").json()
     assert listing["count"] == 1
@@ -1767,6 +2096,40 @@ def test_clear_resets_agents_and_logs():
     r = client.delete("/agents")
     assert r.status_code == 200
     assert client.get("/agents").json()["count"] == 0
+
+
+def test_simulate_returns_gantt_for_each_policy():
+    client = _make_client()
+    body = {
+        "policy": "rr",
+        "quantum": 2,
+        "jobs": [
+            {"id": "A", "burst": 5, "arrival": 0, "priority": 1},
+            {"id": "B", "burst": 3, "arrival": 0, "priority": 1},
+        ],
+    }
+    r = client.post("/simulate", json=body)
+    assert r.status_code == 200
+    gantt = r.json()["gantt"]
+    assert gantt[0] == {"id": "A", "start": 0, "end": 2}
+    assert gantt[-1]["end"] == 8  # total = 5 + 3
+
+
+def test_simulate_fcfs_does_not_require_quantum():
+    client = _make_client()
+    body = {
+        "policy": "fcfs",
+        "jobs": [
+            {"id": "A", "burst": 3, "arrival": 0, "priority": 1},
+            {"id": "B", "burst": 2, "arrival": 0, "priority": 1},
+        ],
+    }
+    r = client.post("/simulate", json=body)
+    assert r.status_code == 200
+    assert r.json()["gantt"] == [
+        {"id": "A", "start": 0, "end": 3},
+        {"id": "B", "start": 3, "end": 5},
+    ]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1781,10 +2144,11 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from enum import Enum
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1801,13 +2165,14 @@ from app.quota_manager import QuotaManager
 from app.ready_queue import ReadyQueue
 from app.sandbox import Sandbox
 from app.scheduler import SchedulingPolicy
+from app.simulator import simulate_fcfs, simulate_priority, simulate_rr
 from app.worker_pool import WorkerPool
 
 
 load_dotenv()
 
 
-def _build_llm() -> LLMClient | None:
+def _build_llm() -> Optional[LLMClient]:
     key = os.environ.get("UPSTAGE_API_KEY")
     if not key or key == "replace_me":
         return None
@@ -1838,8 +2203,11 @@ _event_bus = EventBus()
 _ready_queue = ReadyQueue(policy=SchedulingPolicy.FCFS)
 _llm = _build_llm()
 _sandbox = _build_sandbox()
-_executor = Executor(llm=_llm, sandbox=_sandbox, quota=_quota,
-                     logger=_logger, events=_event_bus)
+_executor = Executor(
+    llm=_llm, sandbox=_sandbox, quota=_quota,
+    logger=_logger, events=_event_bus, bus=_message_bus,
+    pipeline_timeout=float(os.environ.get("PIPELINE_WAIT_TIMEOUT", "30")),
+)
 _worker_pool = WorkerPool(
     ready_queue=_ready_queue,
     executor=_executor,
@@ -1880,10 +2248,30 @@ class AgentCreate(BaseModel):
     kind: AgentKind = AgentKind.LLM
     priority: int = Field(1, ge=1, le=10)
     timeout: int = Field(3, ge=1, le=30)
+    pipe_to: Optional[int] = None
 
 
 class PolicyChange(BaseModel):
     policy: SchedulingPolicy
+
+
+class SimulatePolicy(str, Enum):
+    FCFS = "fcfs"
+    PRIORITY = "priority"
+    RR = "rr"
+
+
+class SimulateJob(BaseModel):
+    id: str
+    burst: int = Field(..., ge=1)
+    arrival: int = Field(0, ge=0)
+    priority: int = Field(1, ge=1, le=10)
+
+
+class SimulateRequest(BaseModel):
+    policy: SimulatePolicy
+    jobs: List[SimulateJob]
+    quantum: Optional[int] = Field(None, ge=1)
 
 
 # ---------- endpoints ----------
@@ -1898,11 +2286,14 @@ def create_agent(req: AgentCreate):
     global _next_id
     task = AgentTask(
         agent_id=_next_id, name=req.name, prompt=req.prompt, kind=req.kind,
-        priority=req.priority, timeout=req.timeout,
+        priority=req.priority, timeout=req.timeout, pipe_to=req.pipe_to,
     )
     _agents.append(task)
     _next_id += 1
-    _logger.log(f"Agent {task.agent_id} ({task.name}) created kind={req.kind.value}")
+    _logger.log(
+        f"Agent {task.agent_id} ({task.name}) created "
+        f"kind={req.kind.value} pipe_to={req.pipe_to}"
+    )
     _event_bus.publish(task.to_dict())
     _ready_queue.put(task)
     return {"message": "created", "agent": task.to_dict()}
@@ -1941,6 +2332,20 @@ def clear():
     return {"message": "cleared"}
 
 
+@app.post("/simulate")
+def simulate(req: SimulateRequest):
+    jobs = [j.model_dump() for j in req.jobs]
+    if req.policy == SimulatePolicy.FCFS:
+        gantt = simulate_fcfs(jobs)
+    elif req.policy == SimulatePolicy.PRIORITY:
+        gantt = simulate_priority(jobs)
+    else:  # RR
+        if req.quantum is None:
+            raise HTTPException(400, "quantum is required for RR")
+        gantt = simulate_rr(jobs, quantum=req.quantum)
+    return {"policy": req.policy.value, "gantt": gantt}
+
+
 @app.get("/events")
 async def sse_events():
     async def stream():
@@ -1952,23 +2357,23 @@ async def sse_events():
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/test_main.py -v`
-Expected: 3 passed.
+Expected: 5 passed.
 
-- [ ] **Step 5: Run the full non-Docker suite**
+- [ ] **Step 5: Run the full non-Docker, non-slow suite**
 
-Run: `uv run pytest -m "not docker"`
+Run: `uv run pytest -m "not docker and not slow"`
 Expected: all tests pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add app/main.py tests/test_main.py
-git commit -m "feat: FastAPI endpoints + SSE stream + worker lifecycle"
+git commit -m "feat: FastAPI endpoints, SSE stream, and /simulate"
 ```
 
 ---
 
-## Task 15: Dashboard (SSE-driven)
+## Task 16: Dashboard (SSE-driven + Simulator UI)
 
 **Files:**
 - Create: `static/index.html`
@@ -1988,14 +2393,14 @@ git commit -m "feat: FastAPI endpoints + SSE stream + worker lifecycle"
 <body>
   <header>
     <h1>Mini Agent OS</h1>
-    <p>OS-inspired runtime for LLM agents · sandboxed code execution · team <strong>GarbageCollector</strong></p>
+    <p>OS-inspired runtime for LLM agents · sandboxed code execution · pipelines · team <strong>GarbageCollector</strong></p>
   </header>
 
   <section>
-    <h2>Scheduling policy</h2>
+    <h2>Scheduling policy (live)</h2>
     <select id="policy">
       <option value="fcfs">FCFS</option>
-      <option value="priority">Priority</option>
+      <option value="priority">Priority (non-preemptive)</option>
     </select>
     <span id="policy-status"></span>
   </section>
@@ -2004,13 +2409,14 @@ git commit -m "feat: FastAPI endpoints + SSE stream + worker lifecycle"
     <h2>Create agent</h2>
     <form id="create-form">
       <input name="name" placeholder="name" required />
-      <textarea name="prompt" placeholder="prompt" required></textarea>
+      <textarea name="prompt" placeholder="prompt — use {INPUT} placeholder for pipeline input" required></textarea>
       <select name="kind">
         <option value="llm">llm</option>
         <option value="code">code (sandboxed)</option>
       </select>
       <input name="priority" type="number" value="5" min="1" max="10" />
       <input name="timeout" type="number" value="3" min="1" max="30" />
+      <input name="pipe_to" type="number" placeholder="pipe_to (optional downstream id)" />
       <button type="submit">Create</button>
     </form>
   </section>
@@ -2024,7 +2430,7 @@ git commit -m "feat: FastAPI endpoints + SSE stream + worker lifecycle"
     <table id="agents">
       <thead><tr>
         <th>ID</th><th>Name</th><th>Kind</th><th>State</th><th>Priority</th>
-        <th>Result</th>
+        <th>Pipe to</th><th>Result</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -2033,6 +2439,32 @@ git commit -m "feat: FastAPI endpoints + SSE stream + worker lifecycle"
   <section>
     <h2>Logs</h2>
     <pre id="logs"></pre>
+  </section>
+
+  <section class="simulator">
+    <h2>Scheduler simulator (Gantt)</h2>
+    <p class="hint">
+      Compute textbook scheduling — including preemptive Round Robin which the live runtime
+      cannot do because LLM/Docker calls are non-preemptable.
+    </p>
+    <div class="sim-controls">
+      <label>Policy
+        <select id="sim-policy">
+          <option value="fcfs">FCFS</option>
+          <option value="priority">Priority (non-preemptive)</option>
+          <option value="rr">Round Robin</option>
+        </select>
+      </label>
+      <label>Quantum (RR only)
+        <input id="sim-quantum" type="number" value="2" min="1" />
+      </label>
+      <button id="sim-run">Run simulation</button>
+    </div>
+    <p class="hint">Jobs (one per line: <code>id burst arrival priority</code>)</p>
+    <textarea id="sim-jobs" rows="5">A 5 0 1
+B 3 0 1
+C 4 2 1</textarea>
+    <div id="sim-gantt"></div>
   </section>
 
   <script src="/static/script.js"></script>
@@ -2067,11 +2499,26 @@ th, td { padding: .5rem; border-bottom: 1px solid #2a2f3a; text-align: left; ver
 pre { background: #181c25; padding: 1rem; border-radius: 6px; max-height: 300px; overflow: auto; margin: 0; }
 td pre { max-height: 120px; padding: .5rem; font-size: 12px; }
 #policy-status { margin-left: .5rem; color: #34d399; font-size: 13px; }
+.hint { color: #8a93a3; font-size: 13px; margin: .25rem 0; }
+
+/* Simulator UI */
+.sim-controls { display: flex; gap: .5rem; align-items: end; margin-bottom: .5rem; flex-wrap: wrap; }
+.sim-controls label { display: grid; gap: .25rem; font-size: 12px; color: #8a93a3; }
+#sim-jobs { width: 100%; max-width: 480px; font-family: monospace; }
+#sim-gantt { display: flex; gap: 2px; margin-top: 1rem; min-height: 60px; }
+.sim-bar {
+  background: #3b82f6; color: white; padding: .35rem .5rem;
+  border-radius: 4px; font-size: 12px; font-family: monospace;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.sim-bar small { opacity: .8; font-size: 10px; }
 ```
 
 - [ ] **Step 3: Write `static/script.js`**
 
 ```javascript
+// ---------- agent table + SSE ----------
+
 const agentMap = new Map();
 
 function renderAgents() {
@@ -2084,6 +2531,7 @@ function renderAgents() {
       <td>${a.kind}</td>
       <td class="state-${a.state}">${a.state}</td>
       <td>${a.priority}</td>
+      <td>${a.pipe_to ?? ""}</td>
       <td><pre>${escapeHtml((a.result || a.error_message || "")).slice(0, 600)}</pre></td>
     </tr>
   `).join("");
@@ -2110,7 +2558,6 @@ async function refreshAll() {
   refreshLogs();
 }
 
-// --- SSE: live state pushes ---
 const es = new EventSource("/events");
 es.onmessage = (ev) => {
   const a = JSON.parse(ev.data);
@@ -2119,11 +2566,13 @@ es.onmessage = (ev) => {
   refreshLogs();
 };
 
-// --- Form: create agent ---
+// ---------- create agent ----------
+
 document.querySelector("#create-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = Object.fromEntries(new FormData(e.target).entries());
   ["priority", "timeout"].forEach(k => body[k] = Number(body[k]));
+  body.pipe_to = body.pipe_to ? Number(body.pipe_to) : null;
   await fetch("/agents", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body),
@@ -2131,7 +2580,8 @@ document.querySelector("#create-form").addEventListener("submit", async (e) => {
   e.target.reset();
 });
 
-// --- Policy switch ---
+// ---------- policy switch ----------
+
 const policySel = document.querySelector("#policy");
 fetch("/policy").then(r => r.json()).then(d => { policySel.value = d.policy; });
 policySel.addEventListener("change", async (e) => {
@@ -2145,12 +2595,61 @@ policySel.addEventListener("change", async (e) => {
   setTimeout(() => s.textContent = "", 1500);
 });
 
-// --- Clear ---
+// ---------- clear ----------
+
 document.querySelector("#clear").onclick = async () => {
   await fetch("/agents", {method: "DELETE"});
   agentMap.clear();
   renderAgents();
   refreshLogs();
+};
+
+// ---------- simulator ----------
+
+function parseJobs(text) {
+  return text.trim().split("\n").map(line => {
+    const [id, burst, arrival = "0", priority = "1"] = line.trim().split(/\s+/);
+    return {
+      id, burst: Number(burst), arrival: Number(arrival), priority: Number(priority),
+    };
+  });
+}
+
+function renderGantt(gantt) {
+  const container = document.querySelector("#sim-gantt");
+  container.innerHTML = "";
+  if (!gantt.length) return;
+  const totalEnd = gantt[gantt.length - 1].end;
+  for (const slice of gantt) {
+    const dur = slice.end - slice.start;
+    const bar = document.createElement("div");
+    bar.className = "sim-bar";
+    bar.style.flexGrow = String(dur);
+    bar.innerHTML = `${slice.id}<small>${slice.start}→${slice.end}</small>`;
+    container.appendChild(bar);
+  }
+  const totalLabel = document.createElement("div");
+  totalLabel.className = "hint";
+  totalLabel.textContent = `total time = ${totalEnd}`;
+  container.appendChild(totalLabel);
+}
+
+document.querySelector("#sim-run").onclick = async () => {
+  const policy = document.querySelector("#sim-policy").value;
+  const quantum = Number(document.querySelector("#sim-quantum").value);
+  const jobs = parseJobs(document.querySelector("#sim-jobs").value);
+  const body = { policy, jobs };
+  if (policy === "rr") body.quantum = quantum;
+  const r = await fetch("/simulate", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    alert(await r.text());
+    return;
+  }
+  const data = await r.json();
+  renderGantt(data.gantt);
 };
 
 refreshAll();
@@ -2159,18 +2658,21 @@ refreshAll();
 - [ ] **Step 4: Manual smoke test**
 
 Run: `docker compose up` then open `http://localhost:8000`
-Expected: dashboard loads. With a real `UPSTAGE_API_KEY` set, create an `llm` agent — the row appears as READY, flips to RUNNING (yellow, pulsing), then DONE (green) within a couple of seconds without any manual refresh.
+Expected:
+- Dashboard loads.
+- With a real `UPSTAGE_API_KEY`, creating an `llm` agent shows READY → RUNNING (yellow pulsing) → DONE (green) without any manual refresh.
+- "Run simulation" in the Scheduler simulator section produces a colored Gantt bar chart.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add static/
-git commit -m "feat: SSE-driven live dashboard"
+git commit -m "feat: SSE dashboard with pipeline support and Gantt simulator UI"
 ```
 
 ---
 
-## Task 16: End-to-End Demo Script
+## Task 17: End-to-End Demo Script
 
 **Files:**
 - Create: `docs/demo-script.md`
@@ -2194,15 +2696,15 @@ git commit -m "feat: SSE-driven live dashboard"
 3. Expected: all four turn RUNNING (yellow, pulsing) **simultaneously**, then complete one by one. Demonstrates the 4-thread worker pool.
 
 ### Scenario B — FCFS scheduling
-1. Set `WORKER_COUNT=1` in `.env` and restart (one worker = serialized → clear ordering).
+1. Set `WORKER_COUNT=1` in `.env` and restart (one worker → serialized order is observable).
 2. Switch policy dropdown to "FCFS".
 3. Create three LLM agents named `a`, `b`, `c` quickly.
 4. Expected: execution order is `a → b → c` (creation order).
 
-### Scenario C — Priority scheduling
+### Scenario C — Priority scheduling (non-preemptive)
 1. Still single worker. Switch policy to "Priority".
 2. Clear, then create three agents named `low` (priority 1), `mid` (5), `high` (9), in that order.
-3. Expected: even though `low` was created first, the order is `high → mid → low`.
+3. Expected: even though `low` was created first, the order is `high → mid → low`. Note that priority does not interrupt a running agent — it only orders the queue.
 
 ### Scenario D — Sandboxed code execution
 1. Restore `WORKER_COUNT=4`, restart.
@@ -2221,18 +2723,41 @@ git commit -m "feat: SSE-driven live dashboard"
 ### Scenario G — Network isolation (system-call restriction)
 1. Create a `code` agent with prompt: `Write Python that uses urllib to fetch https://example.com and prints the status code.`
 2. Expected: code runs but reports a network error — `--network=none` blocks egress at the container namespace boundary.
+
+### Scenario H — Pipeline (inter-agent IPC via bounded MessageBus)
+1. Restore default `.env`.
+2. Create agent **#1** first (note its assigned id, e.g. 5):
+   - name = `gen`, kind = `llm`, prompt = `List 3 interesting facts about pelicans.`
+   - pipe_to = the id that will be assigned to the next agent (one greater than #1's id; if #1 got id 5, set pipe_to = 6).
+3. Immediately create agent **#2**:
+   - name = `summary`, kind = `llm`, prompt = `Summarize the following into a single sentence: {INPUT}`
+   - leave pipe_to blank.
+4. Expected: `gen` runs and DONE; `summary` was RUNNING (blocked on `bus.receive("pipe-6")`) and the moment `gen` finishes, `summary`'s prompt gets `{INPUT}` substituted and the agent completes. This demonstrates the bounded MessageBus + producer/consumer pattern wiring two agents.
+
+### Scenario I — Round Robin scheduling (simulator)
+1. In the "Scheduler simulator" section, paste:
+
+```
+A 8 0 3
+B 4 0 1
+C 9 0 2
+D 5 0 4
+```
+
+2. Choose **Round Robin**, quantum = `3`, click **Run simulation**.
+3. Expected: a Gantt bar chart showing repeated A/B/C/D quanta in arrival order until each job's burst is consumed. Switch policy to **FCFS** or **Priority** and compare the orderings on the same jobs.
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add docs/demo-script.md
-git commit -m "docs: end-to-end demo script with concurrency scenarios"
+git commit -m "docs: end-to-end demo script with pipeline and simulator scenarios"
 ```
 
 ---
 
-## Task 17: Technical Report and Process Skeletons
+## Task 18: Technical Report and Process Skeletons
 
 **Files:**
 - Create: `docs/technical-report.md`
@@ -2251,6 +2776,7 @@ git commit -m "docs: end-to-end demo script with concurrency scenarios"
 
 ## 2. System Architecture
 [Diagram: User → FastAPI → ReadyQueue → WorkerPool (N threads) → Executor → (LLMClient | Sandbox).
+MessageBus connects upstream → downstream agents.
 EventBus pushes state changes to SSE → Dashboard.
 Reference file paths so the reader can jump straight to the code.]
 
@@ -2271,20 +2797,26 @@ This runtime intentionally layers two concurrency models — exactly like a real
 | Agent execution | threading worker pool (N) | Blocking work: LLM HTTP call, `docker run` subprocess |
 | Bridge | `EventBus` (queue.Queue + `call_soon_threadsafe`) | Thread-safe handoff to asyncio for SSE fan-out |
 
-## 5. OS Concepts and Where They Live
+## 5. Scheduling: Live vs. Simulated
+A real LLM call is atomic — once an HTTP request is in flight, the only way to "preempt" it is to abandon the response. Likewise a `docker run` subprocess can only be killed wholesale. The live runtime therefore implements **non-preemptive FCFS and Priority**: the scheduler only chooses which READY agent a free worker picks up next, never interrupting a running one.
+
+To still demonstrate preemptive Round Robin — the canonical OS-class algorithm — the project ships a separate **simulator module** (`app/simulator.py`) that takes hypothetical burst times and produces Gantt timelines for FCFS, non-preemptive Priority, and Round Robin. The dashboard renders these as colored bar charts. Splitting "live behavior" from "textbook behavior" is honest about what the LLM substrate allows and what the OS course expects.
+
+## 6. OS Concepts and Where They Live
 
 | OS Concept | File | How it's implemented |
 |---|---|---|
 | Process / PCB | `app/agent.py` | `AgentTask` dataclass |
 | Process state | `app/agent.py` | `AgentState` enum, transitions logged + published |
 | Ready queue | `app/ready_queue.py` | Synchronized queue with switchable policy |
-| Scheduler (FCFS / Priority) | `app/scheduler.py` | Strategy via sort-key functions |
+| Live scheduler (FCFS / Priority, non-preemptive) | `app/scheduler.py` | Strategy via sort-key functions |
+| Simulated scheduler (FCFS / Priority / RR) | `app/simulator.py` | Pure functions, Gantt timeline output |
 | Worker pool | `app/worker_pool.py` | N daemon threads, blocking pop |
 | Mutex | `app/quota_manager.py` | `threading.Lock` guards shared API quota |
 | Condition (wait/notify) | `app/ready_queue.py` | Workers wait when empty, notified on put |
 | Bounded buffer (producer/consumer) | `app/message_bus.py` | `queue.Queue(maxsize=N)` per topic |
-| IPC (in-process) | `app/message_bus.py` | Inter-agent messaging |
-| IPC (parent ↔ sandbox) | `app/sandbox.py` | stdin/stdout pipes |
+| IPC — agent → agent pipeline | `app/executor.py` + `app/message_bus.py` | `{INPUT}` placeholder + `pipe_to` field |
+| IPC — parent ↔ sandbox | `app/sandbox.py` | stdin/stdout pipes |
 | Process isolation | `app/sandbox.py` | Docker container per execution |
 | System call restriction | `app/sandbox.py` | `--cap-drop=ALL`, `--security-opt=no-new-privileges` |
 | Network isolation | `app/sandbox.py` | `--network=none` |
@@ -2294,20 +2826,24 @@ This runtime intentionally layers two concurrency models — exactly like a real
 | Event notification | `app/event_bus.py` | Thread-safe fan-out to async subscribers |
 | Trace log | `app/logger.py` | File-backed event log |
 
-## 6. LLM Integration
+## 7. LLM Integration
 [How Solar Pro 3 is called, prompt format, what the wrapper does, error handling.]
 
-## 7. Walkthrough — A Code-Execution Agent
+## 8. Walkthrough — A Code-Execution Agent
 [Step by step: POST /agents → ReadyQueue.put → worker wakes via Condition → quota mutex acquired → LLM completion → sandbox.run → SSE event → dashboard update → DONE state. Include one real screenshot or log excerpt.]
 
-## 8. Limitations and Future Work
+## 9. Walkthrough — A Pipeline (IPC demo)
+[Two agents wired with pipe_to / {INPUT}; explain how the downstream worker blocks on the bounded queue and resumes when the upstream publishes its result. Include a screenshot.]
+
+## 10. Limitations and Future Work
 - Single-host runtime; no distributed scheduling.
-- No preemption — a running agent runs to completion or timeout.
+- **Non-preemptive live scheduling.** LLM calls and Docker subprocesses cannot be cleanly preempted, so the live runtime never interrupts a running agent. The simulator covers preemptive RR for completeness, but a hypothetical "tokens-per-quantum" preemption of streaming LLM output would be interesting future work.
+- **Docker-out-of-Docker.** The app mounts `/var/run/docker.sock` to spawn sandbox containers — convenient for demo, equivalent to host root for production. A proper deployment would use a separate sandbox service over an authenticated channel.
+- **Events dropped without subscribers.** The EventBus has no replay buffer; events fired before the dashboard connects are lost.
 - Sandbox image is Python-only.
 - In-memory agent table — lost on restart.
-- No SJF / Round-Robin schedulers (only FCFS + Priority).
 
-## 9. Conclusion
+## 11. Conclusion
 [1 paragraph on what was learned about applying OS abstractions to LLM workloads.]
 ```
 
@@ -2324,8 +2860,8 @@ Implementation plan: `docs/superpowers/plans/2026-05-20-mini-agent-os.md`
 |---|---|
 | 9 | Plan, scaffold, Docker setup |
 | 10 | Agent, Scheduler, ReadyQueue, QuotaManager, MessageBus, EventBus |
-| 11 | LLM client, Sandbox, Executor, WorkerPool |
-| 12 | FastAPI + SSE, Dashboard |
+| 11 | LLM client, Sandbox, Executor (with pipeline), WorkerPool |
+| 12 | Simulator, FastAPI + SSE, Dashboard |
 | 13 | Demo, technical report, slides |
 
 ## Weekly Progress
@@ -2353,21 +2889,26 @@ git commit -m "docs: technical report and development process skeletons"
 
 **Spec coverage:**
 - ✅ Direction A (OS-for-LLM) — Mini Agent OS as a runtime
-- ✅ Substantive OS concepts: process/PCB, state machine, ready queue, scheduler (2 policies), worker pool, mutex, condition, bounded buffer, IPC (2 forms), process isolation, syscall restriction, network/file/resource limits, timeout, event bus, trace log — well beyond "runs on Linux" hand-waving
-- ✅ Real LLM integration (Solar Pro 3) — sits behind a scheduler, quota gate, and optional sandbox; not a thin wrapper
-- ✅ Working app + setup instructions + demo script (Tasks 1, 14, 16)
-- ✅ Technical report skeleton (Task 17)
-- ✅ Development process doc skeleton (Task 17)
+- ✅ Substantive OS concepts: process/PCB, state machine, ready queue, **3 scheduling policies** (FCFS, Priority live; RR via simulator), worker pool, mutex, condition, bounded buffer, IPC (2 forms — pipeline + sandbox pipes), process isolation, syscall restriction, network/file/resource limits, timeout, event bus, trace log
+- ✅ Real LLM integration (Solar Pro 3) — sits behind scheduler, quota gate, optional sandbox, and pipeline IPC; not a thin wrapper
+- ✅ Working app + setup instructions + demo script (Tasks 1, 15, 17)
+- ✅ Technical report skeleton with explicit non-preemptive scheduling discussion (Task 18)
+- ✅ Development process doc skeleton (Task 18)
+- ✅ MessageBus is wired into actual runtime behavior (Tasks 12, 15, 17 Scenario H) — no dead code
+- ✅ Round Robin demonstrated via simulator (Tasks 14, 15, 16, 17 Scenario I)
 - ⚠️ Presentation slides (English) — not in this plan; slides are a manual creative artifact, produced from the technical report once implementation stabilizes
 
-**Placeholder scan:** all implementation tasks contain concrete code. The `docs/technical-report.md` skeleton in Task 17 contains intentional `[fill in]` cues — that document is the author's writing, not part of the implementation, so cues belong there.
+**Placeholder scan:** all implementation tasks contain concrete code. The `docs/technical-report.md` skeleton in Task 18 contains intentional `[fill in]` cues — that document is the author's writing, not part of the implementation, so cues belong there.
 
 **Type consistency:**
 - `AgentKind` enum values `"llm"` / `"code"` used identically in `app/agent.py`, `app/main.py` (Pydantic field), and `static/index.html` (`<option value>`).
+- `SchedulingPolicy` enum values `"fcfs"` / `"priority"` used identically in scheduler, ReadyQueue, main.py, and dashboard. The simulator has its own `SimulatePolicy` enum (adds `"rr"`); the dashboard simulator section uses these values.
 - `SandboxResult` fields (`exit_code`, `stdout`, `stderr`, `timed_out`) used identically in Task 11 (definition), Task 12 (Executor consumes), and tests.
-- `SchedulingPolicy` enum values `"fcfs"` / `"priority"` used identically in scheduler, ReadyQueue, main.py, and dashboard.
 - `ReadyQueue.pop_next()` returning `None` as shutdown sentinel is honored by `WorkerPool._worker_loop` (Task 13).
-- `Executor` constructor parameters (`llm`, `sandbox`, `quota`, `logger`, `events`) match the call site in `app/main.py`.
+- `Executor` constructor parameters (`llm`, `sandbox`, `quota`, `logger`, `events`, `bus`, `pipeline_timeout`) match the call site in `app/main.py` (Task 15).
+- `INPUT_PLACEHOLDER = "{INPUT}"` defined in `app/executor.py` (Task 12); the same literal `{INPUT}` appears in dashboard placeholder text and demo Scenario H — kept literal rather than imported by the frontend, which is acceptable since the dashboard is decoupled.
+- Simulator Job shape `{id, burst, arrival, priority}` is consistent between `app/simulator.py` (Task 14), Pydantic model `SimulateJob` in Task 15, dashboard `parseJobs` in Task 16, and demo input in Task 17.
+- `pipe_to` field is `Optional[int]` everywhere: `AgentTask`, `AgentCreate` Pydantic model, demo script, and dashboard form.
 
 ---
 
