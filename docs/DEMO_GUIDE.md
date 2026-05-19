@@ -115,14 +115,18 @@ Open <http://localhost:8000> in your browser.
 
 You should see:
 
-- **Header** — "Mini Agent OS — Team GarbageCollector"
+- **Header** — "Mini Agent OS — Team GarbageCollector" with two helper links:
+  - **API docs (Swagger)** → opens `/docs` (interactive OpenAPI explorer — try endpoints in-browser)
+  - **Health** → opens `/health` (a JSON snapshot of worker count, ready-queue size, quota remaining, and current policy — useful as a sanity check before and during the demo)
 - **Scheduling policy** dropdown (FCFS / Priority)
-- **Create agent** form
+- **Create agent** form (with `kind`, `priority`, `timeout`, `pipe_to` fields)
 - **Agents** table (empty initially)
 - **Logs** pane (empty initially)
 - **Scheduler simulator** section at the bottom
 
 **Important:** the dashboard subscribes to live state via SSE (`EventSource("/events")`). Always open the dashboard **before** creating agents — events fired before the dashboard connects are dropped (no replay buffer).
+
+> **Quick sanity check:** click the **Health** link before starting. You should see something like `{"status":"ok","policy":"fcfs","workers":4,"agents_total":0,"ready_queue_size":0,"quota_remaining":1000}`. This confirms the worker pool started and the queue is empty.
 
 ---
 
@@ -180,27 +184,31 @@ Each scenario takes 10–60 seconds. Run them in order or pick the ones you want
    - timeout = **5**
    - prompt = `Write a Python program that prints the first 10 Fibonacci numbers, one per line.`
 3. **Watch for:** state goes READY → RUNNING → **DONE**. The Result column shows two parts: the generated code, then the sandbox stdout. Expect `0 1 1 2 3 5 8 13 21 34` (or similar formatting).
-4. **What to point out:** each `code` agent spawns its own Docker container with `--network=none --read-only --cap-drop=ALL --memory=128m --cpus=0.5`. The container is destroyed (`--rm`) after each run.
+4. **What to point out:** each `code` agent spawns its own Docker container with `--network=none --read-only --tmpfs=/tmp:rw,noexec,nosuid,size=32m --cap-drop=ALL --security-opt=no-new-privileges --memory=128m --cpus=0.5 --pids-limit=64`. The rootfs is read-only but `/tmp` is a writable tmpfs (so e.g. `tempfile.mkstemp()` works inside the sandbox without giving up the read-only protection elsewhere). The container is destroyed (`--rm`) after each run.
+
+> **Optional `/tmp` variant:** ask Solar Pro 3 to `Write Python that creates a temporary file with tempfile.NamedTemporaryFile, writes "hello" to it, then reads it back and prints the contents.` Expected: prints `hello` cleanly — this works because of the tmpfs mount.
 
 ### Scenario E — Timeout (sandbox kill)
 
-**Goal:** show the parent-side timeout killing an unresponsive sandbox.
+**Goal:** show the parent-side timeout killing an unresponsive sandbox container.
 
 1. Create a `code` agent:
    - timeout = **2**
    - prompt = `Write Python that calls time.sleep(60) and then prints "done".`
 2. **Watch for:** state becomes **TIMEOUT** within ~2 seconds. The Result column shows the error message "Sandbox execution timed out".
-3. **What to point out:** `subprocess.run(..., timeout=2)` raises `TimeoutExpired`, which causes Docker's `--rm` cleanup to terminate the orphaned container. This is the OS analog of process termination on burst overrun.
+3. **What to point out:** `subprocess.run(..., timeout=2)` raises `TimeoutExpired`. On timeout the Sandbox reads the container ID from the `--cidfile` it wrote at container start and calls `docker kill <cid>` explicitly — without this, killing the docker *CLI* process does **not** propagate to the container, and you'd accumulate orphans. This is the OS analog of process termination on burst overrun. Verify cleanup with `docker ps -a | grep mini-agent-os-sandbox` — no zombies should remain.
 
 ### Scenario F — Quota exhaustion (mutex synchronization)
 
-**Goal:** show the QuotaManager mutex enforcing exact-N successes under concurrency.
+**Goal:** show the QuotaManager mutex enforcing exact-N successes under concurrency, and the refund on LLM failure.
 
 1. Edit `.env`: set `GLOBAL_QUOTA=2` and `WORKER_COUNT=4`. Restart.
 2. Reload dashboard.
 3. Create **5** LLM agents quickly (any prompts).
 4. **Watch for:** the first two reach **DONE**; the remaining three become **ERROR** with `API quota exhausted` in the Result column.
 5. **What to point out:** even though 4 workers race for the quota concurrently, the count is exactly 2 — `threading.Lock` guarantees the read-modify-write of `_used` is atomic. Without the mutex you would see anywhere from 2 to 5 successes.
+
+> **Refund nuance:** the quota is **refunded** if the LLM call itself raises (network error, rate limit, etc.) — `QuotaManager.release(1)` runs in the executor's `except` branch. So a flaky upstream does not slowly drain the quota toward zero; only *successful* LLM calls permanently consume a unit. To see this live, set `UPSTAGE_API_KEY=invalid_key` temporarily, set `GLOBAL_QUOTA=2`, create 5 agents — all five reach ERROR (LLM auth failure) and the `/health` endpoint shows `quota_remaining: 2` because every attempt was refunded.
 
 ### Scenario G — Network isolation (system-call restriction)
 
@@ -268,7 +276,7 @@ uv run pytest -m "not docker and not slow"   # fast unit tests
 uv run pytest                                # full suite incl. Docker tests
 ```
 
-Expected: **47 passed**.
+Expected: **50 passed**.
 
 ---
 

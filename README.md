@@ -16,7 +16,7 @@ An OS-inspired runtime that schedules LLM agents like processes on a worker pool
 - **Live SSE dashboard** — agent state changes (READY → RUNNING → DONE/TIMEOUT/ERROR) are pushed to the browser in real time; no polling.
 - **Pipeline IPC** — agents can be chained via a `pipe_to` field and `{INPUT}` placeholder, with bounded-buffer back-pressure semantics.
 - **Cross-platform** — Windows (Docker Desktop + WSL2) and macOS (Docker Desktop) both supported; `uv` lockfile makes installs reproducible.
-- **47 tests pass**, including Docker integration tests for the sandbox.
+- **50 tests pass**, including Docker integration tests for the sandbox.
 
 ---
 
@@ -92,7 +92,7 @@ For a complete end-to-end walkthrough — including each of the 9 demo scenarios
 | Live scheduler (FCFS / Priority, non-preemptive) | `app/scheduler.py` | Sort-key strategy functions, runtime-switchable |
 | Simulated scheduler (FCFS / Priority / **RR**) | `app/simulator.py` | Pure functions producing Gantt timelines |
 | Worker pool (CPU analog) | `app/worker_pool.py` | N daemon threads, blocking pop loop |
-| Mutex | `app/quota_manager.py` | `threading.Lock` guards shared API quota |
+| Mutex | `app/quota_manager.py` | `threading.Lock` guards shared API quota; `release(n)` refunds on LLM failure |
 | Condition variable (wait/notify) | `app/ready_queue.py` | Workers block on empty; producers `notify()` |
 | Bounded buffer (producer/consumer) | `app/message_bus.py` | `queue.Queue(maxsize=N)` per topic |
 | IPC — agent → agent | `app/executor.py` + `app/message_bus.py` | `pipe_to` field + `{INPUT}` placeholder |
@@ -100,9 +100,9 @@ For a complete end-to-end walkthrough — including each of the 9 demo scenarios
 | Process isolation | `app/sandbox.py` | One Docker container per execution |
 | System call restriction | `app/sandbox.py` | `--cap-drop=ALL`, `--security-opt=no-new-privileges` |
 | Network isolation | `app/sandbox.py` | `--network=none` |
-| File permission | `app/sandbox.py` | `--read-only` rootfs, no host mounts |
+| File permission | `app/sandbox.py` | `--read-only` rootfs + `--tmpfs /tmp:rw,noexec,nosuid,size=32m` (no host mounts) |
 | Resource limit | `app/sandbox.py` | `--memory`, `--cpus`, `--pids-limit` (cgroups) |
-| Timeout / forced termination | `app/sandbox.py` | `subprocess.TimeoutExpired` → container reaped |
+| Timeout / forced termination | `app/sandbox.py` | `subprocess.TimeoutExpired` → `docker kill` via `--cidfile` (no orphan containers) |
 | Event notification | `app/event_bus.py` | Thread-safe fan-out to async SSE subscribers |
 | Trace log | `app/logger.py` | Thread-safe file-backed event log |
 
@@ -172,6 +172,7 @@ GarbageCollector_OS/
 | `GET`    | `/logs` | Read the trace log |
 | `POST`   | `/simulate` | Compute a Gantt timeline for hypothetical jobs (FCFS / Priority / RR) |
 | `GET`    | `/events` | Server-Sent Events stream of agent state changes |
+| `GET`    | `/health` | Runtime stats: policy, worker count, ready-queue size, quota remaining |
 
 OpenAPI / Swagger UI is available at <http://localhost:8000/docs>.
 
