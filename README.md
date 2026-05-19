@@ -11,7 +11,7 @@ uv sync                          # install deps from uv.lock
 cp .env.example .env             # add your UPSTAGE_API_KEY
 docker compose build             # build app + sandbox images
 docker compose up                # start
-open http://localhost:8000
+# Then open http://localhost:8000 in your browser
 ```
 
 ## Local development (without Docker for the app)

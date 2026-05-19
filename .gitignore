@@ -24,4 +24,9 @@ Thumbs.db
 
 # Project
 logs/*.txt
+logs/*.log
 !logs/.gitkeep
+
+# Build artifacts
+dist/
+build/
