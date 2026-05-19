@@ -120,6 +120,21 @@ def test_pipeline_consumer_blocks_for_input_then_substitutes_placeholder():
     assert INPUT_PLACEHOLDER not in actual_prompt
 
 
+def test_llm_exception_refunds_quota():
+    llm = MagicMock()
+    llm.complete.side_effect = RuntimeError("network blip")
+    qm = QuotaManager(total=2)
+    ex = _make_executor(llm=llm, quota=qm)
+
+    task = _task(AgentKind.LLM)
+    ex.execute(task)
+
+    assert task.state == AgentState.ERROR
+    assert "llm error" in task.error_message.lower()
+    # quota was acquired, then refunded — remaining should be back to 2
+    assert qm.remaining() == 2
+
+
 def test_pipeline_consumer_times_out_when_no_producer():
     llm = MagicMock()
     bus = MessageBus(capacity=5)

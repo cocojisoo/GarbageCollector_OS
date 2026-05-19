@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import threading
 from contextlib import asynccontextmanager
 from enum import Enum
 from pathlib import Path
@@ -53,6 +54,7 @@ def _build_sandbox() -> Sandbox:
 # ---------- module-level runtime state ----------
 
 _agents: List[AgentTask] = []
+_agents_lock = threading.Lock()
 _next_id = 1
 _logger = Logger(Path("logs/execution_log.txt"))
 _quota = QuotaManager(total=int(os.environ.get("GLOBAL_QUOTA", "1000")))
@@ -74,12 +76,25 @@ _worker_pool = WorkerPool(
 
 
 def _reset_for_tests() -> None:
-    """Used only by the test suite to wipe per-test state."""
+    """Used only by the test suite to wipe per-test state.
+
+    Also binds the EventBus to an event loop so endpoints that call
+    `_event_bus.publish` do not raise when tests construct a `TestClient`
+    without entering its context manager (which would otherwise trigger the
+    lifespan and do the binding for us).
+    """
     global _agents, _next_id
-    _agents = []
-    _next_id = 1
+    with _agents_lock:
+        _agents = []
+        _next_id = 1
     _quota.reset()
     _logger.clear()
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    _event_bus.bind_loop(loop)
 
 
 # ---------- FastAPI lifespan ----------
@@ -142,27 +157,27 @@ def root():
 @app.post("/agents")
 def create_agent(req: AgentCreate):
     global _next_id
-    task = AgentTask(
-        agent_id=_next_id, name=req.name, prompt=req.prompt, kind=req.kind,
-        priority=req.priority, timeout=req.timeout, pipe_to=req.pipe_to,
-    )
-    _agents.append(task)
-    _next_id += 1
+    with _agents_lock:
+        task = AgentTask(
+            agent_id=_next_id, name=req.name, prompt=req.prompt, kind=req.kind,
+            priority=req.priority, timeout=req.timeout, pipe_to=req.pipe_to,
+        )
+        _agents.append(task)
+        _next_id += 1
     _logger.log(
         f"Agent {task.agent_id} ({task.name}) created "
         f"kind={req.kind.value} pipe_to={req.pipe_to}"
     )
-    try:
-        _event_bus.publish(task.to_dict())
-    except RuntimeError:
-        pass  # EventBus not yet bound to a loop (e.g. during tests without lifespan)
+    _event_bus.publish(task.to_dict())
     _ready_queue.put(task)
     return {"message": "created", "agent": task.to_dict()}
 
 
 @app.get("/agents")
 def list_agents():
-    return {"count": len(_agents), "agents": [a.to_dict() for a in _agents]}
+    with _agents_lock:
+        snapshot = [a.to_dict() for a in _agents]
+    return {"count": len(snapshot), "agents": snapshot}
 
 
 @app.get("/policy")
@@ -185,12 +200,28 @@ def get_logs():
 @app.delete("/agents")
 def clear():
     global _agents, _next_id
-    _agents = []
-    _next_id = 1
+    with _agents_lock:
+        _agents = []
+        _next_id = 1
     _quota.reset()
     _logger.clear()
     _logger.log("State cleared")
     return {"message": "cleared"}
+
+
+@app.get("/health")
+def health():
+    """Liveness + runtime stats. Useful for demos and uptime checks."""
+    with _agents_lock:
+        n_agents = len(_agents)
+    return {
+        "status": "ok",
+        "policy": _ready_queue.get_policy().value,
+        "workers": _worker_pool._n,
+        "agents_total": n_agents,
+        "ready_queue_size": _ready_queue.size(),
+        "quota_remaining": _quota.remaining(),
+    }
 
 
 @app.post("/simulate")

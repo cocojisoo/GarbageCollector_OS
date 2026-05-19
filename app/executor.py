@@ -47,16 +47,19 @@ class Executor:
         if not self._quota.try_acquire(1):
             return self._fail(task, AgentState.ERROR, "API quota exhausted")
 
-        # 3. LLM call
+        # 3. LLM call. On any exception we refund the quota unit: nothing was
+        # actually consumed upstream from our perspective.
         try:
             llm_output = self._llm.complete(prompt)
         except Exception as e:
+            self._quota.release(1)
             return self._fail(task, AgentState.ERROR, f"LLM error: {e}")
 
-        # 4. Optional sandbox for CODE agents
+        # 4. Branch by kind. Explicit elif/else so an unknown kind raises
+        # instead of silently falling through to the sandbox path.
         if task.kind == AgentKind.LLM:
             final_result = llm_output
-        else:
+        elif task.kind == AgentKind.CODE:
             sb = self._sandbox.run(llm_output)
             if sb.timed_out:
                 return self._fail(task, AgentState.TIMEOUT,
@@ -65,6 +68,9 @@ class Executor:
                 return self._fail(task, AgentState.ERROR,
                                   f"Sandbox exit {sb.exit_code}: {sb.stderr.strip()}")
             final_result = f"code:\n{llm_output}\n---\nstdout:\n{sb.stdout}"
+        else:
+            return self._fail(task, AgentState.ERROR,
+                              f"Unknown agent kind: {task.kind!r}")
 
         task.result = final_result
 
