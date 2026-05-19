@@ -35,6 +35,8 @@ class ReadyQueue:
         """Block until an agent is available or the queue is closed.
 
         Returns the next agent per the current policy, or None if closed.
+        If the queue is closed but items remain, they are drained before
+        None is returned (graceful shutdown).
         """
         with self._cond:
             while not self._items and not self._closed:
