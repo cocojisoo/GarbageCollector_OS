@@ -1,0 +1,30 @@
+[project]
+name = "mini-agent-os"
+version = "0.1.0"
+description = "OS-inspired runtime for scheduling LLM agents (Team GarbageCollector)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.32,<0.33",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.5,<3",
+    "sse-starlette>=2.1,<3",
+    "openai>=1.50,<2",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<0.25",
+    "httpx>=0.27,<0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v"
+markers = [
+    "docker: requires Docker daemon and sandbox image",
+    "slow: timing-sensitive tests that may flake on slow CI",
+]
