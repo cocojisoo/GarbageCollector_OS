@@ -1,7 +1,7 @@
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /usr/local/bin/uv
 
 # Install docker CLI so the app can spawn sandbox containers via mounted socket
 RUN apt-get update && apt-get install -y --no-install-recommends \
