@@ -42,8 +42,9 @@ build\gcos-tui.exe
 
 ## LLM 경로
 
-TUI가 시작할 때 API key를 묻는다. 키가 있으면 runtime의 `llm_enabled`가 켜지고,
-executor가 agent prompt를 broker로 넘긴다. broker는 Upstage/OpenAI 호환 API를
-`curl`로 호출한다.
+TUI가 시작할 때 API key와 model name을 묻는다. 둘 다 있으면 runtime의
+`llm_enabled`가 켜지고, executor가 agent prompt를 broker로 넘긴다. broker는
+Upstage/OpenAI 호환 API를 `curl`로 호출한다.
 
-키를 입력하지 않으면 scheduling, quota, timeout을 offline으로 확인한다.
+API key를 입력하지 않거나 model name이 비어 있으면 scheduling, quota, timeout을
+offline으로 확인한다.

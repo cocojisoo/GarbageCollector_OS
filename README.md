@@ -19,7 +19,7 @@ GUI 앱으로 묶지 않고 콘솔 프로그램으로 만들었다. macOS/Linux�
 - ready queue: 별도 큐 객체 대신 `AgentRuntime.agents[]`에서 `READY`만 골라 사용
 - quota: `[CALL]` 개수로 API 사용량 계산
 - timeout: `[SLOW]` 프롬프트로 초과 실행 상황 재현
-- LLM 실행: 시작할 때 API key를 입력하면 agent 실행 중 broker를 통해 실제 모델 호출
+- LLM 실행: 시작할 때 API key와 model name을 입력하면 agent 실행 중 broker 호출
 - policy gate: `[SHELL:...]`, `[READ:...]`, `[ROOT:...]`, `[KERNEL:...]`,
   `[CODEX:...]` 형태의 요청을 분류하고 위험한 요청은 차단
 - execution log: 생성, 스케줄링, 실행, quota error, timeout, broker 호출 기록
@@ -69,15 +69,17 @@ make
 make run
 ```
 
-실행하면 먼저 API key를 묻는다.
+실행하면 먼저 API key와 model name을 묻는다.
 
 ```text
 api key:
+model name:
 ```
 
-Upstage/OpenAI 호환 키를 넣으면 agent가 실제 LLM broker를 호출한다. Enter만
-누르면 네트워크 호출 없이 스케줄러와 상태 전이만 확인하는 모드로 실행된다. 입력한 키는
-프로세스 환경 변수에만 넣고 파일로 저장하지 않는다.
+Upstage/OpenAI 호환 키와 모델명을 둘 다 넣으면 agent가 실제 LLM broker를
+호출한다. API key에서 Enter만 누르면 네트워크 호출 없이 스케줄러와 상태 전이만
+확인하는 모드로 실행된다. 입력한 키와 모델명은 프로세스 환경 변수에만 넣고 파일로
+저장하지 않는다.
 
 Windows 쪽은 MSYS2/MinGW 기준이다.
 
@@ -140,6 +142,7 @@ offline 모드에서는 `[CALL]` 하나를 작업 단위 하나로 보고, agent
 
 ```text
 api key: up_... 또는 sk-...
+model name: solar-pro3 또는 gpt-4o-mini 등
 gcos> create
 name: Explainer
 prompt: llm: FCFS scheduling을 한국어 두 문장으로 설명해줘
@@ -165,7 +168,7 @@ gcos> run priority
 | Round Robin | `src/agent.c` | quantum 1 기준 반복 실행 |
 | Resource quota | `src/agent.c` | `[CALL]` count와 `Agent.quota` 비교 |
 | Timeout | `src/agent.c` | `[SLOW]`로 timeout 경로 재현 |
-| LLM broker | `src/agent.c`, `src/codex_broker.c` | API key가 있으면 agent 실행 중 모델 호출 |
+| LLM broker | `src/agent.c`, `src/codex_broker.c` | API key와 model name이 있으면 agent 실행 중 모델 호출 |
 | Policy gate | `src/policy.c` | action marker 파싱 후 위험 요청 차단 |
 | Trace log | `src/agent.c` | ring buffer log |
 | Dashboard | `src/tui.c` | terminal table과 logs |
@@ -201,7 +204,7 @@ GarbageCollector_OS/
 | `make run` | TUI 실행 |
 | `make check` | 기본 smoke test 실행 |
 | `make portable-check` | C source syntax check |
-| `make api-check` | 실제 API key로 LLM 호출 확인 |
+| `make api-check` | 실제 API key와 model name으로 LLM 호출 확인 |
 | `make context` | 프로젝트 요약 출력 |
 | `make clean` | 빌드 산출물 삭제 |
 
@@ -229,6 +232,6 @@ GarbageCollector_OS/
 - FCFS/Priority/RR = scheduler policy
 - `[CALL]` = resource quota
 - `[SLOW]` = timeout
-- API key broker = LLM agent execution
+- API key + model name broker = LLM agent execution
 - runtime log = trace log
 - TUI = process table/dashboard

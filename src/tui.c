@@ -18,6 +18,8 @@
 #define TUI_LINE_LEN 1024
 #define TUI_WRAP_WIDTH 100
 
+static int read_line(const char *prompt, char *out, size_t out_size);
+
 static void append_text(char *out, size_t out_size, const char *text)
 {
     size_t used;
@@ -52,6 +54,48 @@ static int gcos_setenv_local(const char *name, const char *value, int overwrite)
 #else
     return setenv(name, value, overwrite);
 #endif
+}
+
+static const char *configured_model_name(void)
+{
+    const char *names[] = {
+        "GCOS_LLM_MODEL",
+        "UPSTAGE_MODEL",
+        "GCOS_OPENAI_MODEL",
+        "OPENAI_MODEL",
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        const char *value = getenv(names[i]);
+        if (value != NULL && value[0] != '\0') {
+            return value;
+        }
+    }
+
+    return "";
+}
+
+static int prompt_model_name(void)
+{
+    char model[TUI_LINE_LEN];
+
+    puts("Enter the model name for this API key.");
+    if (!read_line("model name: ", model, sizeof(model)) || model[0] == '\0') {
+        puts("model name is required for LLM mode");
+        return 0;
+    }
+
+    return gcos_setenv_local("GCOS_LLM_MODEL", model, 1) == 0;
+}
+
+static int ensure_model_configured(void)
+{
+    if (configured_model_name()[0] != '\0') {
+        return 1;
+    }
+
+    return prompt_model_name();
 }
 
 static void trim_newline(char *line)
@@ -319,16 +363,27 @@ static void configure_llm_at_start(AgentRuntime *runtime)
     puts("\nLLM broker setup");
     puts("================");
     if (codex_broker_has_api_key()) {
+        if (!ensure_model_configured()) {
+            runtime_set_llm_enabled(runtime, 0);
+            puts("offline scheduler-test mode enabled");
+            return;
+        }
         runtime_set_llm_enabled(runtime, 1);
-        printf("using configured LLM backend: %s\n", codex_broker_backend_name());
+        printf("using configured LLM backend: %s model=%s\n",
+               codex_broker_backend_name(), configured_model_name());
         return;
     }
 
-    puts("Paste an Upstage/OpenAI-compatible API key to run agents through the LLM.");
-    puts("Press Enter without a key only for offline scheduler tests.");
+    puts("Enter both an Upstage/OpenAI-compatible API key and a model name.");
+    puts("Press Enter at the API-key prompt only for offline scheduler tests.");
     if (!read_secret_line("api key: ", key, sizeof(key)) || key[0] == '\0') {
         runtime_set_llm_enabled(runtime, 0);
         puts("no API key entered; offline simulation mode enabled");
+        return;
+    }
+    if (!prompt_model_name()) {
+        runtime_set_llm_enabled(runtime, 0);
+        puts("offline scheduler-test mode enabled");
         return;
     }
 
@@ -340,7 +395,8 @@ static void configure_llm_at_start(AgentRuntime *runtime)
     }
 
     runtime_set_llm_enabled(runtime, 1);
-    printf("LLM backend enabled: %s\n", codex_broker_backend_name());
+    printf("LLM backend enabled: %s model=%s\n", codex_broker_backend_name(),
+           configured_model_name());
 }
 
 static void create_agent_interactive(AgentRuntime *runtime)
@@ -475,9 +531,9 @@ static void build_local_answer(AgentRuntime *runtime, const char *input,
         agent->action = action;
         agent->state = AGENT_BLOCKED_ON_APPROVAL;
         snprintf(agent->error, sizeof(agent->error),
-                 "LLM broker requires a startup API key");
+                 "LLM broker requires a startup API key and model name");
         runtime_log(runtime,
-                    "agent %d blocked: CODEX action requires configured API key",
+                    "agent %d blocked: CODEX action requires configured API key and model name",
                     agent->id);
         append_text(answer, answer_size, "Local Mini Agent OS input path.\n");
         append_text(answer, answer_size, agent->error);

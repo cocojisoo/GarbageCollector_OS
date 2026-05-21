@@ -21,7 +21,7 @@ GCOS C TUI
 - 세 가지 스케줄링 정책
 - quota 초과와 timeout
 - 위험 action 차단
-- API key 기반 LLM 실행
+- API key와 model name 기반 LLM 실행
 - execution log
 
 ## 다음 단계

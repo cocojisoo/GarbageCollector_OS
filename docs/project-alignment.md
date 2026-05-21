@@ -15,21 +15,21 @@
 | 상태 추적 | `AgentState` |
 | timeout | `[SLOW]` 처리 |
 | quota | `[CALL]` count |
-| 실제 LLM 실행 | TUI API key 입력 + `codex_broker_run_with_timeout` |
+| 실제 LLM 실행 | TUI API key/model name 입력 + `codex_broker_run_with_timeout` |
 | execution log | `runtime_log` |
 | dashboard | `src/tui.c` |
 
 ## 데모 순서
 
 1. `make run`
-2. API key 입력. 네트워크 없이 보여줄 때는 Enter.
+2. API key와 model name 입력. 네트워크 없이 보여줄 때는 API key에서 Enter.
 3. `demo`
 4. `run priority`, `run fcfs`, `run rr` 비교
 5. `logs`로 실행 기록 확인
 
 설명할 때는 Agent=Process, id=PID, `Agent`=PCB, READY 필터링=ready queue,
-scheduler=FCFS/Priority/RR, `[CALL]`=quota, `[SLOW]`=timeout, broker=LLM 실행
-경로로 잡으면 된다.
+scheduler=FCFS/Priority/RR, `[CALL]`=quota, `[SLOW]`=timeout,
+key+model broker=LLM 실행 경로로 잡으면 된다.
 
 ## 선 긋기
 
