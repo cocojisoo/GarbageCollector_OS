@@ -18,6 +18,9 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--tui-smoke") == 0) {
             return tui_smoke_test();
         }
+        if (strcmp(argv[i], "--rr-smoke") == 0) {
+            return rr_smoke_test();
+        }
         if (strcmp(argv[i], "--input-smoke") == 0) {
             return input_smoke_test();
         }

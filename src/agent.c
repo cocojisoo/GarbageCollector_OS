@@ -123,6 +123,36 @@ static int count_marker(const char *text, const char *marker)
     return count;
 }
 
+static const char *skip_prompt_space(const char *text)
+{
+    while (text != NULL && (*text == ' ' || *text == '\t' ||
+                            *text == '\n' || *text == '\r')) {
+        text++;
+    }
+
+    return text != NULL ? text : "";
+}
+
+static const char *llm_prompt_body(const char *prompt)
+{
+    const char *body = skip_prompt_space(prompt);
+
+    if (strncmp(body, "llm:", 4) == 0) {
+        return skip_prompt_space(body + 4);
+    }
+    if (strncmp(body, "ask:", 4) == 0) {
+        return skip_prompt_space(body + 4);
+    }
+    return body;
+}
+
+static int agent_required_calls(const Agent *agent)
+{
+    int required_calls = count_marker(agent->prompt, "[CALL]");
+
+    return required_calls > 0 ? required_calls : 1;
+}
+
 const char *agent_state_name(AgentState state)
 {
     switch (state) {
@@ -169,6 +199,13 @@ void runtime_init(AgentRuntime *runtime)
 {
     memset(runtime, 0, sizeof(*runtime));
     runtime->next_agent_id = 1;
+}
+
+void runtime_set_llm_enabled(AgentRuntime *runtime, int enabled)
+{
+    runtime->llm_enabled = enabled ? 1 : 0;
+    runtime_log(runtime, "LLM execution %s",
+                runtime->llm_enabled ? "enabled" : "disabled");
 }
 
 void runtime_log(AgentRuntime *runtime, const char *fmt, ...)
@@ -300,10 +337,7 @@ void agent_execute(AgentRuntime *runtime, Agent *agent)
         return;
     }
 
-    required_calls = count_marker(agent->prompt, "[CALL]");
-    if (required_calls == 0) {
-        required_calls = 1;
-    }
+    required_calls = agent_required_calls(agent);
 
     if (required_calls > agent->quota) {
         agent->used_quota = agent->quota;
@@ -326,6 +360,27 @@ void agent_execute(AgentRuntime *runtime, Agent *agent)
                  "timeout: required=%d timeout=%d", execution_time,
                  agent->timeout);
         runtime_log(runtime, "agent %d timed out", agent->id);
+        return;
+    }
+
+    if (runtime->llm_enabled) {
+        runtime_log(runtime, "agent %d calling LLM broker backend=%s", agent->id,
+                    codex_broker_backend_name());
+        agent->used_quota = required_calls;
+        if (!codex_broker_run_with_timeout(llm_prompt_body(agent->prompt),
+                                           agent->result,
+                                           sizeof(agent->result),
+                                           agent->timeout)) {
+            agent->state = AGENT_ERROR;
+            agent->finished_time = time(NULL);
+            snprintf(agent->error, sizeof(agent->error), "%s", agent->result);
+            runtime_log(runtime, "agent %d LLM broker failed: %s", agent->id,
+                        agent->error);
+            return;
+        }
+        agent->state = AGENT_DONE;
+        agent->finished_time = time(NULL);
+        runtime_log(runtime, "agent %d completed LLM call", agent->id);
         return;
     }
 
@@ -390,6 +445,83 @@ void runtime_run_fcfs(AgentRuntime *runtime)
 void runtime_run_priority(AgentRuntime *runtime)
 {
     runtime_run(runtime, 1);
+}
+
+void runtime_run_round_robin(AgentRuntime *runtime)
+{
+    Agent *ready[GCOS_MAX_AGENTS];
+    int remaining[GCOS_MAX_AGENTS];
+    int count = 0;
+    int active = 1;
+    int i;
+
+    for (i = 0; i < runtime->agent_count; i++) {
+        if (runtime->agents[i].state == AGENT_READY) {
+            ready[count] = &runtime->agents[i];
+            remaining[count] = agent_required_calls(&runtime->agents[i]);
+            count++;
+        }
+    }
+
+    qsort(ready, (size_t)count, sizeof(ready[0]), by_fcfs);
+    runtime_log(runtime, "round-robin scheduler started quantum=1");
+
+    while (active) {
+        active = 0;
+        for (i = 0; i < count; i++) {
+            Agent *agent = ready[i];
+            ActionRequest action;
+
+            if (agent->state != AGENT_READY) {
+                continue;
+            }
+
+            active = 1;
+            action = policy_extract_action(agent->prompt);
+            if (runtime->llm_enabled || action.kind != ACTION_NONE ||
+                strstr(agent->prompt, "[SLOW]") != NULL) {
+                agent_execute(runtime, agent);
+                continue;
+            }
+
+            if (remaining[i] > agent->quota) {
+                agent->used_quota = agent->quota;
+                agent->state = AGENT_ERROR;
+                agent->finished_time = time(NULL);
+                snprintf(agent->error, sizeof(agent->error),
+                         "quota exceeded: required=%d quota=%d",
+                         remaining[i], agent->quota);
+                runtime_log(runtime, "agent %d failed: %s", agent->id,
+                            agent->error);
+                continue;
+            }
+
+            if (agent->started_time == 0) {
+                agent->started_time = time(NULL);
+            }
+            agent->state = AGENT_RUNNING;
+            runtime_log(runtime, "agent %d round-robin quantum remaining=%d",
+                        agent->id, remaining[i]);
+            agent->used_quota++;
+            remaining[i]--;
+
+            if (remaining[i] <= 0) {
+                agent->state = AGENT_DONE;
+                agent->finished_time = time(NULL);
+                snprintf(agent->result, sizeof(agent->result),
+                         "round-robin simulated LLM agent completed; calls=%d",
+                         agent->used_quota);
+                runtime_log(runtime, "agent %d completed round-robin work",
+                            agent->id);
+            } else {
+                agent->state = AGENT_READY;
+                runtime_log(runtime, "agent %d yielded back to READY",
+                            agent->id);
+            }
+        }
+    }
+
+    runtime_log(runtime, "round-robin scheduler finished");
 }
 
 void runtime_approve_agent(AgentRuntime *runtime, int id)

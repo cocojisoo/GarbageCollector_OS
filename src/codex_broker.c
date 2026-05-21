@@ -1,6 +1,6 @@
 #include "gcos.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__) && !defined(__MINGW64__)
 
 #include <stdio.h>
 #include <string.h>
@@ -10,9 +10,21 @@ const char *codex_broker_backend_name(void)
     return "portable-local";
 }
 
+int codex_broker_has_api_key(void)
+{
+    return 0;
+}
+
 int codex_broker_run(const char *prompt, char *out, size_t out_size)
 {
+    return codex_broker_run_with_timeout(prompt, out, out_size, 0);
+}
+
+int codex_broker_run_with_timeout(const char *prompt, char *out,
+                                  size_t out_size, int timeout_seconds)
+{
     (void)prompt;
+    (void)timeout_seconds;
     snprintf(out, out_size,
              "external LLM broker is disabled in the portable Windows TUI build");
     return 0;
@@ -434,6 +446,11 @@ static int api_key_configured(void)
     return api_config_load(&config);
 }
 
+int codex_broker_has_api_key(void)
+{
+    return api_key_configured();
+}
+
 static int executable_file(const char *path)
 {
     return path != NULL && path[0] != '\0' && access(path, X_OK) == 0;
@@ -651,7 +668,8 @@ static int extract_api_response_text(const char *json, char *out,
     return 0;
 }
 
-static int llm_api_run(const char *prompt, char *out, size_t out_size)
+static int llm_api_run(const char *prompt, char *out, size_t out_size,
+                       int timeout_seconds)
 {
     char request_path[] = "/tmp/gcos-api-request-XXXXXX";
     char response_path[] = "/tmp/gcos-api-response-XXXXXX";
@@ -751,6 +769,9 @@ static int llm_api_run(const char *prompt, char *out, size_t out_size)
     fputs("\"\n", config_file);
     fputs("request = \"POST\"\n", config_file);
     fputs("silent\nshow-error\nfail-with-body\n", config_file);
+    if (timeout_seconds > 0) {
+        fprintf(config_file, "max-time = %d\n", timeout_seconds);
+    }
     fprintf(config_file, "output = \"%s\"\n", response_path);
     fputs("header = \"Content-Type: application/json\"\n", config_file);
     fputs("header = \"Authorization: Bearer ", config_file);
@@ -915,10 +936,16 @@ const char *codex_broker_backend_name(void)
 
 int codex_broker_run(const char *prompt, char *out, size_t out_size)
 {
+    return codex_broker_run_with_timeout(prompt, out, out_size, 0);
+}
+
+int codex_broker_run_with_timeout(const char *prompt, char *out,
+                                  size_t out_size, int timeout_seconds)
+{
     const char *backend = getenv("GCOS_LLM_BACKEND");
 
     if (backend != NULL && strcmp(backend, "api") == 0) {
-        return llm_api_run(prompt, out, out_size);
+        return llm_api_run(prompt, out, out_size, timeout_seconds);
     }
 
     if (backend != NULL && strcmp(backend, "codex") == 0) {
@@ -934,7 +961,7 @@ int codex_broker_run(const char *prompt, char *out, size_t out_size)
     }
 
     if (api_key_configured()) {
-        return llm_api_run(prompt, out, out_size);
+        return llm_api_run(prompt, out, out_size, timeout_seconds);
     }
 
     if (env_truthy("GCOS_ENABLE_CODEX_FALLBACK")) {
@@ -969,7 +996,7 @@ int api_smoke_test(void)
 {
     char out[GCOS_TEXT_LEN];
 
-    if (!llm_api_run("Reply with exactly: gcos-api-ok", out, sizeof(out))) {
+    if (!llm_api_run("Reply with exactly: gcos-api-ok", out, sizeof(out), 30)) {
         fprintf(stderr, "api-smoke failed: %s\n", out);
         return 1;
     }

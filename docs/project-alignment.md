@@ -17,9 +17,11 @@ The implementation here keeps that exact product identity.
 | Store agents in a ready queue | `AgentRuntime.agents[]` filtered by `READY` |
 | FCFS scheduling | `runtime_run_fcfs` |
 | Priority scheduling | `runtime_run_priority` |
+| Round-robin scheduling | `runtime_run_round_robin` |
 | Track states | `AgentState` |
 | Timeout handling | `[SLOW]` branch in `agent_execute` |
 | Resource quota | `[CALL]` counting in `agent_execute` |
+| Real LLM execution | startup API key in `src/tui.c`, broker call in `agent_execute` |
 | Execution logs | `runtime_log` ring buffer |
 | Dashboard | terminal TUI in `src/tui.c` |
 
@@ -27,13 +29,14 @@ The implementation here keeps that exact product identity.
 
 1. Run `make run`.
 2. Type `demo`.
-3. Type `run priority` or `run fcfs`.
-4. Show agent table states, quota error, timeout behavior, and logs.
+3. Type `run priority`, `run fcfs`, or `run rr`.
+4. Show agent table states, quota error, timeout behavior, LLM result, and logs.
 5. Explain the OS mapping: Agent=Process, ID=PID, table=PCB/ready queue,
-   scheduler=FCFS/Priority, quota=resource limit, timeout=process timeout.
+   scheduler=FCFS/Priority/RR, quota=resource limit, timeout=process timeout.
 
 ## What Not To Claim
 
 - Do not claim this is a real kernel-level OS.
-- Do not claim the TUI calls a real LLM during normal local simulation.
 - Do not reintroduce a GUI/app bundle as the primary interface.
+- Do not claim Docker, SSE, worker-pool IPC, or sandbox features in this C TUI
+  branch.

@@ -16,11 +16,11 @@ For the Week 09 project requirement, the direction is:
 ```text
 GCOS portable terminal TUI
   -> AgentRuntime process table
-  -> FCFS / priority scheduler
+  -> FCFS / priority / round-robin scheduler
   -> timeout and quota enforcement
   -> policy engine
   -> typed action broker
-  -> optional LLM/API broker
+  -> LLM/API broker
 ```
 
 The LLM should not live in kernel mode. The right split is:
@@ -57,7 +57,7 @@ automation permissions. This is a future extension, not the current core.
    - one console binary
    - OS Demo scenario
    - Agent=Process table
-   - FCFS / priority scheduling
+   - FCFS / priority / round-robin scheduling
    - quota, timeout, and policy-blocked kernel requests
 
 2. Typed action broker
@@ -67,7 +67,8 @@ automation permissions. This is a future extension, not the current core.
    - persistent audit log
 
 3. LLM broker integration
-   - Upstage Solar Pro 3 API-key path
+   - TUI startup API-key input
+   - Upstage Solar Pro 3 or OpenAI-compatible API path
    - explicit Codex CLI mode only when requested
    - broker output treated as agent result, not as kernel authority
 

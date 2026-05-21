@@ -6,6 +6,15 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#include <conio.h>
+#include <io.h>
+#include <stdlib.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#endif
+
 #define TUI_LINE_LEN 1024
 #define TUI_WRAP_WIDTH 100
 
@@ -33,9 +42,16 @@ static const char *skip_space(const char *text)
     return text != NULL ? text : "";
 }
 
-static int starts_with_text(const char *text, const char *prefix)
+static int gcos_setenv_local(const char *name, const char *value, int overwrite)
 {
-    return strncmp(text, prefix, strlen(prefix)) == 0;
+#ifdef _WIN32
+    if (!overwrite && getenv(name) != NULL) {
+        return 0;
+    }
+    return _putenv_s(name, value);
+#else
+    return setenv(name, value, overwrite);
+#endif
 }
 
 static void trim_newline(char *line)
@@ -61,6 +77,74 @@ static int read_line(const char *prompt, char *out, size_t out_size)
     }
     trim_newline(out);
     return 1;
+}
+
+static int read_secret_line(const char *prompt, char *out, size_t out_size)
+{
+    if (out_size == 0) {
+        return 0;
+    }
+
+#ifdef _WIN32
+    if (!_isatty(_fileno(stdin))) {
+#else
+    if (!isatty(fileno(stdin))) {
+#endif
+        return read_line(prompt, out, out_size);
+    }
+
+    printf("%s", prompt);
+    fflush(stdout);
+
+#ifdef _WIN32
+    size_t used = 0;
+
+    while (used + 1 < out_size) {
+        int ch = _getch();
+        if (ch == '\r' || ch == '\n') {
+            break;
+        }
+        if (ch == '\b') {
+            if (used > 0) {
+                used--;
+            }
+            continue;
+        }
+        out[used++] = (char)ch;
+    }
+    out[used] = '\0';
+    putchar('\n');
+    return 1;
+#else
+    {
+        struct termios old_term;
+        struct termios new_term;
+        int ok = 0;
+
+        if (tcgetattr(fileno(stdin), &old_term) == 0) {
+            new_term = old_term;
+            new_term.c_lflag &= (tcflag_t)~ECHO;
+            if (tcsetattr(fileno(stdin), TCSAFLUSH, &new_term) == 0) {
+                ok = 1;
+            }
+        }
+
+        if (fgets(out, (int)out_size, stdin) == NULL) {
+            out[0] = '\0';
+            if (ok) {
+                tcsetattr(fileno(stdin), TCSAFLUSH, &old_term);
+            }
+            putchar('\n');
+            return 0;
+        }
+        if (ok) {
+            tcsetattr(fileno(stdin), TCSAFLUSH, &old_term);
+        }
+        putchar('\n');
+        trim_newline(out);
+        return 1;
+    }
+#endif
 }
 
 static void format_stamp(time_t value, char *out, size_t out_size)
@@ -215,26 +299,48 @@ static void render_help(void)
     puts("  list            show process/agent table");
     puts("  run fcfs        run READY agents by creation order");
     puts("  run priority    run READY agents by high priority first");
+    puts("  run rr          run READY agents by round-robin quantum");
     puts("  demo            load the README scheduling/quota/timeout demo");
     puts("  logs            show execution logs");
     puts("  clear           clear all agents and logs");
     puts("  help            show this help");
     puts("  quit            exit");
     puts("");
-    puts("prompt markers for simulation:");
-    puts("  [CALL] counts as one simulated API call; no [CALL] means one call");
+    puts("prompt markers:");
+    puts("  [CALL] counts as one LLM/API quota unit; no [CALL] means one call");
     puts("  [SLOW] forces timeout");
-    puts("  [CODEX:...] is blocked in the local TUI so plain usage never spends tokens");
+    puts("  llm: / ask: prefixes are sent to the configured LLM broker");
 }
 
-static int prompt_requests_external_broker(const char *prompt)
+static void configure_llm_at_start(AgentRuntime *runtime)
 {
-    const char *trimmed = skip_space(prompt);
-    ActionRequest action = policy_extract_action(trimmed);
+    char key[TUI_LINE_LEN];
 
-    return starts_with_text(trimmed, "llm:") ||
-           starts_with_text(trimmed, "ask:") ||
-           action.kind == ACTION_CODEX;
+    puts("\nLLM broker setup");
+    puts("================");
+    if (codex_broker_has_api_key()) {
+        runtime_set_llm_enabled(runtime, 1);
+        printf("using configured LLM backend: %s\n", codex_broker_backend_name());
+        return;
+    }
+
+    puts("Paste an Upstage/OpenAI-compatible API key to run agents through the LLM.");
+    puts("Press Enter without a key only for offline scheduler tests.");
+    if (!read_secret_line("api key: ", key, sizeof(key)) || key[0] == '\0') {
+        runtime_set_llm_enabled(runtime, 0);
+        puts("no API key entered; offline simulation mode enabled");
+        return;
+    }
+
+    if (gcos_setenv_local("GCOS_LLM_API_KEY", key, 1) != 0 ||
+        gcos_setenv_local("GCOS_LLM_BACKEND", "api", 1) != 0) {
+        runtime_set_llm_enabled(runtime, 0);
+        puts("failed to configure API key; offline simulation mode enabled");
+        return;
+    }
+
+    runtime_set_llm_enabled(runtime, 1);
+    printf("LLM backend enabled: %s\n", codex_broker_backend_name());
 }
 
 static void create_agent_interactive(AgentRuntime *runtime)
@@ -264,11 +370,6 @@ static void create_agent_interactive(AgentRuntime *runtime)
     timeout = parse_int_or_default(line, 3, 1, 30);
     read_line("quota 1-20 [2]: ", line, sizeof(line));
     quota = parse_int_or_default(line, 2, 1, 20);
-
-    if (prompt_requests_external_broker(prompt)) {
-        puts("plain TUI mode is local simulation only; create a normal prompt without llm:/ask:/[CODEX:].");
-        return;
-    }
 
     agent = runtime_create_agent(runtime, name, prompt, priority, timeout, quota);
     if (agent == NULL) {
@@ -302,10 +403,18 @@ static void run_scheduler(AgentRuntime *runtime, int priority)
     render_agents(runtime);
 }
 
+static void run_round_robin_scheduler(AgentRuntime *runtime)
+{
+    runtime_run_round_robin(runtime);
+    puts("Round-robin scheduling completed");
+    render_agents(runtime);
+}
+
 int tui_run(AgentRuntime *runtime)
 {
     char line[TUI_LINE_LEN];
 
+    configure_llm_at_start(runtime);
     render_help();
     while (read_line("\ngcos> ", line, sizeof(line))) {
         const char *cmd = skip_space(line);
@@ -324,6 +433,11 @@ int tui_run(AgentRuntime *runtime)
         } else if (strcmp(cmd, "run priority") == 0 ||
                    strcmp(cmd, "priority") == 0) {
             run_scheduler(runtime, 1);
+        } else if (strcmp(cmd, "run rr") == 0 ||
+                   strcmp(cmd, "run round-robin") == 0 ||
+                   strcmp(cmd, "rr") == 0 ||
+                   strcmp(cmd, "round-robin") == 0) {
+            run_round_robin_scheduler(runtime);
         } else if (strcmp(cmd, "logs") == 0) {
             render_logs(runtime);
         } else if (strcmp(cmd, "clear") == 0) {
@@ -350,12 +464,6 @@ static void build_local_answer(AgentRuntime *runtime, const char *input,
     ActionRequest action;
 
     answer[0] = '\0';
-    if (prompt_requests_external_broker(input)) {
-        snprintf(answer, answer_size,
-                 "TUI mode is local simulation only; external broker prefixes are not executed.");
-        return;
-    }
-
     agent = runtime_create_agent(runtime, "User", input, 5, 3, 2);
     if (agent == NULL) {
         snprintf(answer, answer_size, "agent table full");
@@ -363,21 +471,21 @@ static void build_local_answer(AgentRuntime *runtime, const char *input,
     }
 
     action = policy_extract_action(input);
-    if (action.kind == ACTION_CODEX) {
+    if (action.kind == ACTION_CODEX && !runtime->llm_enabled) {
         agent->action = action;
         agent->state = AGENT_BLOCKED_ON_APPROVAL;
         snprintf(agent->error, sizeof(agent->error),
-                 "external LLM action blocked in local TUI");
+                 "LLM broker requires a startup API key");
         runtime_log(runtime,
-                    "agent %d blocked: external LLM action needs explicit non-TUI broker mode",
+                    "agent %d blocked: CODEX action requires configured API key",
                     agent->id);
-        append_text(answer, answer_size, "Local Mini Agent OS simulation only.\n");
+        append_text(answer, answer_size, "Local Mini Agent OS input path.\n");
         append_text(answer, answer_size, agent->error);
         return;
     }
 
     runtime_run_priority(runtime);
-    append_text(answer, answer_size, "Local Mini Agent OS simulation completed.");
+    append_text(answer, answer_size, "Local Mini Agent OS input path completed.");
 }
 
 int tui_smoke_test(void)
@@ -407,6 +515,39 @@ int tui_smoke_test(void)
     return 0;
 }
 
+int rr_smoke_test(void)
+{
+    AgentRuntime runtime;
+    Agent *a;
+    Agent *b;
+    Agent *c;
+
+    runtime_init(&runtime);
+    a = runtime_create_agent(&runtime, "A", "first [CALL] [CALL]", 1, 3, 3);
+    b = runtime_create_agent(&runtime, "B", "second [CALL]", 9, 3, 2);
+    c = runtime_create_agent(&runtime, "C", "quota [CALL] [CALL] [CALL]", 5, 3,
+                             2);
+    if (a == NULL || b == NULL || c == NULL) {
+        fprintf(stderr, "rr-smoke failed: create\n");
+        return 1;
+    }
+
+    runtime_run_round_robin(&runtime);
+    if (a->state != AGENT_DONE || b->state != AGENT_DONE ||
+        c->state != AGENT_ERROR || a->used_quota != 2 ||
+        b->used_quota != 1) {
+        fprintf(stderr,
+                "rr-smoke failed: a=%s/%d b=%s/%d c=%s/%d\n",
+                agent_state_name(a->state), a->used_quota,
+                agent_state_name(b->state), b->used_quota,
+                agent_state_name(c->state), c->used_quota);
+        return 1;
+    }
+
+    puts("rr-smoke passed");
+    return 0;
+}
+
 int input_smoke_test(void)
 {
     AgentRuntime runtime;
@@ -422,15 +563,17 @@ int input_smoke_test(void)
 
     runtime_init(&runtime);
     build_local_answer(&runtime, "[CODEX:gcos-test]", answer, sizeof(answer));
-    if (runtime.agent_count != 0 ||
-        strstr(answer, "local simulation only") == NULL) {
+    if (runtime.agent_count != 1 ||
+        runtime.agents[0].state != AGENT_BLOCKED_ON_APPROVAL ||
+        strstr(answer, "Local Mini Agent OS") == NULL) {
         fprintf(stderr, "input-smoke failed: CODEX prompt answer=%s\n", answer);
         return 1;
     }
 
     runtime_init(&runtime);
     build_local_answer(&runtime, "llm: do not call", answer, sizeof(answer));
-    if (runtime.agent_count != 0 || strstr(answer, "local simulation only") == NULL) {
+    if (runtime.agent_count != 1 || runtime.agents[0].state != AGENT_DONE ||
+        strstr(answer, "Local Mini Agent OS") == NULL) {
         fprintf(stderr, "input-smoke failed: broker prefix answer=%s\n", answer);
         return 1;
     }

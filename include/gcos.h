@@ -80,6 +80,7 @@ typedef struct {
     Agent agents[GCOS_MAX_AGENTS];
     int agent_count;
     int next_agent_id;
+    int llm_enabled;
     char logs[GCOS_MAX_LOGS][GCOS_TEXT_LEN];
     int log_count;
 } AgentRuntime;
@@ -91,8 +92,10 @@ Agent *runtime_create_agent(AgentRuntime *runtime, const char *name,
 Agent *runtime_find_agent(AgentRuntime *runtime, int id);
 void runtime_reset(AgentRuntime *runtime);
 void runtime_log(AgentRuntime *runtime, const char *fmt, ...);
+void runtime_set_llm_enabled(AgentRuntime *runtime, int enabled);
 void runtime_run_fcfs(AgentRuntime *runtime);
 void runtime_run_priority(AgentRuntime *runtime);
+void runtime_run_round_robin(AgentRuntime *runtime);
 void runtime_approve_agent(AgentRuntime *runtime, int id);
 void agent_execute(AgentRuntime *runtime, Agent *agent);
 
@@ -103,12 +106,16 @@ ActionRequest policy_extract_action(const char *prompt);
 PolicyDecision policy_decide(const ActionRequest *action, int approval_granted);
 int policy_run_action(const ActionRequest *action, char *out, size_t out_size);
 const char *codex_broker_backend_name(void);
+int codex_broker_has_api_key(void);
 int codex_broker_run(const char *prompt, char *out, size_t out_size);
+int codex_broker_run_with_timeout(const char *prompt, char *out,
+                                  size_t out_size, int timeout_seconds);
 
 int tui_run(AgentRuntime *runtime);
 int self_test(void);
 int os_demo_smoke_test(void);
 int tui_smoke_test(void);
+int rr_smoke_test(void);
 int input_smoke_test(void);
 int wrap_smoke_test(void);
 int api_config_smoke_test(void);

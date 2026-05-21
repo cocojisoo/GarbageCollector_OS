@@ -30,6 +30,7 @@ check: $(TARGET)
 	$(TARGET) --self-test
 	$(TARGET) --os-demo-smoke
 	$(TARGET) --tui-smoke
+	$(TARGET) --rr-smoke
 	$(TARGET) --input-smoke
 	$(TARGET) --wrap-smoke
 	$(TARGET) --api-config-smoke

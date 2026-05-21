@@ -6,10 +6,11 @@ GCOS is now a single console binary:
 gcos-tui
   -> TUI command loop
   -> AgentRuntime process table
-  -> FCFS / priority scheduler
-  -> quota and timeout simulation
+  -> FCFS / priority / round-robin scheduler
+  -> quota and timeout enforcement
+  -> LLM broker call when API key is configured
   -> execution log ring buffer
-  -> optional typed policy layer
+  -> typed policy layer
 ```
 
 The TUI replaces both the upstream FastAPI dashboard and the later macOS GUI.
@@ -37,6 +38,7 @@ The TUI commands mirror the upstream API endpoints:
 | `GET /agents` | `list` |
 | `POST /run/fcfs` | `run fcfs` |
 | `POST /run/priority` | `run priority` |
+| `POST /run/rr` | `run rr` |
 | `GET /logs` | `logs` |
 | `DELETE /agents` | `clear` |
 
@@ -49,6 +51,7 @@ should use MinGW/MSYS2:
 mingw32-make CC=gcc EXEEXT=.exe
 ```
 
-Optional broker/network checks are not required for the TUI assignment demo.
-Normal verification stays local with `make check`. Actual Windows build
-verification is still pending until a MinGW/MSYS2 environment runs it.
+The MinGW/MSYS2 path uses the same console UI. The LLM broker expects a
+curl-compatible environment; smoke verification stays local with `make check`,
+while live API verification is available through `make api-check` when a real
+key is configured.

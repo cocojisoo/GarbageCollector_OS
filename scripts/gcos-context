@@ -7,15 +7,15 @@ cd "$ROOT"
 printf 'GCOS fast context\n'
 printf '=================\n\n'
 
-printf 'Project: portable C TUI Mini Agent OS for local LLM-style agent scheduling.\n'
-printf 'Default TUI mode is local simulation only; llm: and ask: inputs are blocked there.\n\n'
+printf 'Project: portable C TUI Mini Agent OS with API-key-backed LLM agent execution.\n'
+printf 'Startup asks for an API key; Enter keeps offline scheduler-test mode.\n\n'
 
 printf 'Core files:\n'
 printf '  include/gcos.h        shared contracts\n'
-printf '  src/tui.c             terminal dashboard and command loop\n'
-printf '  src/agent.c           agent table, scheduler, quota, timeout, smoke tests\n'
+printf '  src/tui.c             terminal dashboard, API-key setup, command loop\n'
+printf '  src/agent.c           agent table, FCFS/priority/RR scheduler, quota, timeout\n'
 printf '  src/policy.c          typed action marker parser and safety policy\n'
-printf '  src/codex_broker.c    optional API/Codex broker\n\n'
+printf '  src/codex_broker.c    Upstage/OpenAI-compatible API/Codex broker\n\n'
 
 printf 'Fast verification:\n'
 printf '  make check            self-test + os-demo + TUI/input/wrap + API config smoke\n'
