@@ -1,37 +1,41 @@
 # GCOS Dev Brief
 
-Use this file as the first context read.
+처음 읽을 개발 메모.
 
-## Core Shape
+## 핵심 파일
 
-- Portable C terminal TUI, not a macOS GUI app.
-- TUI and dashboard commands: `src/tui.c`
-- Runtime/scheduler/quota/timeout/state: `src/agent.c`
-- Policy/action markers: `src/policy.c`
-- Upstage/OpenAI-compatible LLM broker: `src/codex_broker.c`
-- Shared contracts: `include/gcos.h`
+- `src/tui.c`: TUI, API key 입력, command loop
+- `src/agent.c`: agent table, FCFS/Priority/RR scheduler, quota, timeout, log
+- `src/policy.c`: action marker 파싱과 위험 요청 차단
+- `src/codex_broker.c`: Upstage/OpenAI 호환 LLM API 호출
+- `include/gcos.h`: shared struct, enum, function declaration
 
-## Upstream Contract
+## 과제 요구와 연결
 
-Implement the original `cocojisoo/GarbageCollector_OS` Mini Agent OS brief:
+- agent 생성/관리
+- ready 상태 agent 관리
+- FCFS, Priority, Round Robin scheduling
+- READY/RUNNING/DONE/TIMEOUT/ERROR 상태 추적
+- `[CALL]` 기반 quota 계산
+- `[SLOW]` 기반 timeout 처리
+- execution log
+- TUI dashboard
+- API key 기반 LLM agent 실행
 
-- create/manage LLM-style agent tasks
-- keep agents in a ready queue/process table
-- run FCFS, priority, and round-robin scheduling
-- track READY/RUNNING/DONE/TIMEOUT/ERROR
-- account API quota with `[CALL]`
-- simulate timeout with `[SLOW]`
-- record execution logs
-- show the process table through a simple dashboard, now TUI
+## LLM 실행
 
-## LLM Execution Rule
+TUI 시작 시 API key를 입력받는다. 키가 있으면 agent 실행 중 broker를 호출하고,
+응답을 agent result로 저장한다.
 
-The TUI asks for an API key at startup. If a key is entered or already present
-in `GCOS_LLM_API_KEY`, `UPSTAGE_API_KEY`, or `OPENAI_API_KEY`, ordinary agents
-execute through the LLM broker and store the model output in the agent result.
-Pressing Enter at startup keeps an offline scheduler-test mode for smoke tests.
+사용 가능한 환경 변수:
 
-## Fast Commands
+- `GCOS_LLM_API_KEY`
+- `UPSTAGE_API_KEY`
+- `OPENAI_API_KEY`
+
+Enter만 치면 offline scheduler test 모드로 실행된다.
+
+## 자주 쓰는 명령
 
 ```sh
 make context

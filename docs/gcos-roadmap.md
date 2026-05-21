@@ -1,99 +1,55 @@
 # GCOS Roadmap
 
-GCOS should stay grounded in the original Mini Agent OS project: an
-OS-inspired runtime that manages LLM agent tasks like processes. A conversational
-assistant shell can exist, but it is not the main identity of the project.
+GCOS의 중심은 Mini Agent OS다. LLM을 붙인 shell이 아니라, LLM agent를
+process처럼 관리하는 runtime으로 잡는다.
 
-For the Week 09 project requirement, the direction is:
-
-- primary direction: OS-for-LLM, because GCOS manages LLM agents with process
-  state, scheduling, quota, timeout, and execution logs
-- supporting direction: LLM-for-OS, because the broker can explain or assist
-  with host OS state through typed, policy-checked actions
-
-## Core Design
+## 현재 단계
 
 ```text
-GCOS portable terminal TUI
-  -> AgentRuntime process table
-  -> FCFS / priority / round-robin scheduler
-  -> timeout and quota enforcement
-  -> policy engine
-  -> typed action broker
-  -> LLM/API broker
+GCOS C TUI
+  -> AgentRuntime
+  -> FCFS / Priority / Round Robin
+  -> quota / timeout
+  -> policy gate
+  -> LLM broker
 ```
 
-The LLM should not live in kernel mode. The right split is:
+현재 브랜치에서 보여줄 수 있는 것:
 
-- GCOS runtime: owns agent lifecycle, scheduling, timeout, quota, state, logs
-- LLM broker: answers prompts or explains state
-- policy gate: turns risky filesystem, shell, root, or kernel requests into
-  blocked/approval states
-- future kernel-adjacent layer: observes events and enforces narrow signed
-  operations
+- agent 생성과 상태 전이
+- ready agent 선택
+- 세 가지 스케줄링 정책
+- quota 초과와 timeout
+- 위험 action 차단
+- API key 기반 LLM 실행
+- execution log
 
-## What "Kernel-Level AI" Means Here
+## 다음 단계
 
-It does not mean an LLM freely executes inside the kernel. It means a future
-GCOS layer can see and influence kernel-relevant events through controlled
-interfaces:
+1. TUI 사용성 정리
+   - 긴 이름/한글 출력 폭 보정
+   - demo case를 발표 순서에 맞게 정리
 
-- process creation and exit
-- file open/read/write attempts
-- network connection attempts
-- device events
-- permission requests
-- sandbox violations
-- resource pressure
+2. action broker 정리
+   - `read`, `list`, `shell`, `kernel`, `root`, `codex` action별 결과 문구 정리
+   - 위험 action은 계속 approval/block 상태로 유지
 
-On Linux this maps to eBPF, LSM hooks, fanotify/inotify, auditd, cgroups, and a
-small privileged daemon. On macOS the equivalent is more constrained and should
-start with Endpoint Security, System Extensions, launch services, and local
-automation permissions. This is a future extension, not the current core.
-
-## Phases
-
-1. Portable Mini Agent OS TUI
-   - one console binary
-   - OS Demo scenario
-   - Agent=Process table
-   - FCFS / priority / round-robin scheduling
-   - quota, timeout, and policy-blocked kernel requests
-
-2. Typed action broker
-   - no free-form root command execution
-   - typed actions such as `read_file`, `summarize_process`, `list_processes`,
-     `watch_folder`, `kill_process_with_confirmation`
-   - persistent audit log
-
-3. LLM broker integration
-   - TUI startup API-key input
-   - Upstage Solar Pro 3 or OpenAI-compatible API path
-   - explicit Codex CLI mode only when requested
-   - broker output treated as agent result, not as kernel authority
-
-4. System observation
-   - process table snapshot
+3. system observation
+   - process snapshot
    - file activity watcher
-   - network activity summary
-   - terminal session and process context
+   - network summary
 
-5. Kernel-adjacent enforcement
-   - Linux eBPF/LSM prototype or macOS Endpoint Security prototype
-   - policy decisions cached locally
-   - LLM proposes policy, deterministic layer enforces it
+4. kernel-adjacent prototype
+   - Linux: eBPF/LSM/auditd/cgroups 중 하나로 작은 관찰 레이어 실험
+   - macOS: Endpoint Security나 System Extension은 별도 단계로 분리
 
-6. AI OS distribution
-   - bootable Linux image or VM
-   - GCOS starts as the shell/session manager
-   - kernel hooks stream events into the broker
-   - high-risk actions require typed approval and rollback plans
+5. 배포 형태
+   - VM 또는 작은 Linux image
+   - GCOS를 shell/session manager처럼 띄우는 방식 검토
 
-## Non-Negotiables
+## 지킬 것
 
-- No arbitrary LLM-generated code in kernel mode.
-- No raw OAuth token parsing in the runtime.
-- No free-form root shell as the privileged interface.
-- Every privileged action needs a typed operation, audit entry, and rollback
-  story.
-- The Mini Agent OS runtime must remain visible in the product and report.
+- LLM이 root shell을 마음대로 실행하게 두지 않는다.
+- token, key, auth 파일을 runtime이 직접 긁어오지 않는다.
+- 위험 작업은 typed action, log, approval을 거친다.
+- 과제 설명에서는 Mini Agent OS 구조를 중심에 둔다.

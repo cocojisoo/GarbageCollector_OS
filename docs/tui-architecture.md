@@ -1,57 +1,49 @@
-# Portable TUI Architecture
+# TUI Architecture
 
-GCOS is now a single console binary:
+현재 구조는 단일 콘솔 바이너리다.
 
 ```text
 gcos-tui
   -> TUI command loop
   -> AgentRuntime process table
-  -> FCFS / priority / round-robin scheduler
-  -> quota and timeout enforcement
-  -> LLM broker call when API key is configured
-  -> execution log ring buffer
-  -> typed policy layer
+  -> FCFS / Priority / Round Robin scheduler
+  -> quota / timeout / policy check
+  -> LLM broker call
+  -> execution log
 ```
 
-The TUI replaces both the upstream FastAPI dashboard and the later macOS GUI.
-This keeps the implementation easy to run from a terminal and makes Windows
-support realistic.
+GUI 앱 번들, 브라우저 서버, SDL/Pango/Cairo 없이 터미널에서 바로 실행한다.
 
-## Build Surface
+## 빌드
 
-- no SDL
-- no Pango/Cairo
-- no `.app`
-- no code signing
-- no browser server required
+```sh
+make
+make run
+```
 
-The default target is `build/gcos-tui` or `build/gcos-tui.exe` when
-`EXEEXT=.exe` is passed.
-
-## Commands
-
-The TUI commands mirror the upstream API endpoints:
-
-| Upstream endpoint | TUI command |
-| --- | --- |
-| `POST /agents` | `create` |
-| `GET /agents` | `list` |
-| `POST /run/fcfs` | `run fcfs` |
-| `POST /run/priority` | `run priority` |
-| `POST /run/rr` | `run rr` |
-| `GET /logs` | `logs` |
-| `DELETE /agents` | `clear` |
-
-## Windows Notes
-
-The primary console path avoids POSIX-only UI dependencies. Windows builds
-should use MinGW/MSYS2:
+Windows는 MSYS2/MinGW 기준이다.
 
 ```sh
 mingw32-make CC=gcc EXEEXT=.exe
+build\gcos-tui.exe
 ```
 
-The MinGW/MSYS2 path uses the same console UI. The LLM broker expects a
-curl-compatible environment; smoke verification stays local with `make check`,
-while live API verification is available through `make api-check` when a real
-key is configured.
+## 명령 매핑
+
+| 기능 | TUI 명령 |
+| --- | --- |
+| agent 생성 | `create` |
+| agent 목록 | `list` |
+| FCFS 실행 | `run fcfs` |
+| Priority 실행 | `run priority` |
+| Round Robin 실행 | `run rr` |
+| log 확인 | `logs` |
+| 초기화 | `clear` |
+
+## LLM 경로
+
+TUI가 시작할 때 API key를 묻는다. 키가 있으면 runtime의 `llm_enabled`가 켜지고,
+executor가 agent prompt를 broker로 넘긴다. broker는 Upstage/OpenAI 호환 API를
+`curl`로 호출한다.
+
+키를 입력하지 않으면 scheduling, quota, timeout을 offline으로 확인한다.

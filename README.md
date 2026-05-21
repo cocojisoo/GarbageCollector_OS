@@ -1,120 +1,64 @@
 # Mini Agent OS
 
-Team GarbageCollector · Week 09 Project · Direction A: Operating System for LLM
+팀 GarbageCollector · 9주차 프로젝트 · 방향 A: LLM을 위한 운영체제
 
-Mini Agent OS is an OS-inspired user-level runtime that manages LLM-style agent
-tasks like processes. Each agent is treated as a process with its own Agent
-Control Block, state, priority, timeout, quota, result, error message, and
-execution log.
+LLM 에이전트를 운영체제의 프로세스처럼 다루는 작은 런타임이다. 각
+에이전트는 id, 상태, 우선순위, timeout, quota, 결과, 에러, 생성/시작/종료
+시간을 가진다. TUI에서 에이전트를 만들고, ready 상태인 에이전트를 스케줄러가
+고른 뒤 실행한다.
 
-The current implementation is a portable terminal TUI. It intentionally avoids
-GUI app packaging so the core project can run as a normal console program while
-still demonstrating the runtime/kernel side of the assignment: scheduling,
-state transitions, quota checks, timeout handling, policy gates, logs, and LLM
-execution through an API-key broker.
+GUI 앱으로 묶지 않고 콘솔 프로그램으로 만들었다. macOS/Linux에서는 `make`로
+바로 빌드하고, Windows에서는 MSYS2/MinGW 환경을 기준으로 같은 TUI를 실행한다.
 
-## Branch Scope
+## 지금 들어간 기능
 
-This branch uses the presentation structure of a full Mini Agent OS project, but
-the content below describes only this repository's C11 terminal implementation.
+- Agent Control Block: id, name, prompt, priority, timeout, quota, state,
+  result, error, timestamp
+- 상태 전이: `READY -> RUNNING -> DONE/TIMEOUT/ERROR`
+- 스케줄러: FCFS, Priority, Round Robin
+- ready queue: 별도 큐 객체 대신 `AgentRuntime.agents[]`에서 `READY`만 골라 사용
+- quota: `[CALL]` 개수로 API 사용량 계산
+- timeout: `[SLOW]` 프롬프트로 초과 실행 상황 재현
+- LLM 실행: 시작할 때 API key를 입력하면 agent 실행 중 broker를 통해 실제 모델 호출
+- policy gate: `[SHELL:...]`, `[READ:...]`, `[ROOT:...]`, `[KERNEL:...]`,
+  `[CODEX:...]` 형태의 요청을 분류하고 위험한 요청은 차단
+- execution log: 생성, 스케줄링, 실행, quota error, timeout, broker 호출 기록
+- TUI dashboard: agent table, result/error, log를 터미널에서 확인
 
-Implemented in this branch:
-
-- C11 terminal TUI runtime.
-- Agent table modeled as a process table.
-- FCFS and priority scheduling.
-- Round-robin scheduling for local time-slice simulation.
-- READY/RUNNING/DONE/TIMEOUT/ERROR state transitions.
-- Startup API-key input for real LLM-backed agent execution.
-- `[CALL]` quota accounting for LLM/API usage.
-- `[SLOW]` timeout handling.
-- Local execution logs and smoke tests.
-- Policy checks for typed local actions such as `[SHELL:...]`, `[READ:...]`,
-  `[ROOT:...]`, `[KERNEL:...]`, and `[CODEX:...]`.
-
-Out of scope for this C TUI branch:
-
-- Docker sandbox execution.
-- Browser/SSE dashboard.
-- Threaded worker pool.
-- IPC pipeline or bounded message bus.
-
-## Highlights
-
-- Agent tasks are managed like OS processes.
-- Each agent has an Agent Control Block with id, state, priority, timeout,
-  quota, timestamps, result, and error fields.
-- READY agents are selected from the runtime table as a ready queue.
-- Three scheduling policies are implemented: FCFS, Priority, and Round Robin.
-- Agent state transitions are visible: READY -> RUNNING -> DONE, TIMEOUT, or
-  ERROR.
-- The TUI asks for an Upstage/OpenAI-compatible API key on startup.
-- When a key is entered or already configured, ordinary agent prompts call the
-  LLM broker and store the model answer as the agent result.
-- Pressing Enter at the API-key prompt keeps an offline scheduler-test mode for
-  smoke tests and classroom dry runs.
-- `[CALL]` markers account for API-call quota usage.
-- `[SLOW]` markers simulate timeout behavior.
-- A runtime log records creation, scheduling, execution, timeout, quota errors,
-  LLM broker calls, and policy blocks.
-- The terminal TUI acts as the dashboard: it displays the process table, logs,
-  scheduler output, and demo scenario results.
-- The code is written in C11 with a small Makefile build surface and no SDL,
-  Pango, Cairo, browser server, or `.app` bundle.
-
-## Architecture
+## 구조
 
 ```text
-                    User Terminal
+User Terminal
+    |
+    v
+TUI command loop
+    |  create / list / run fcfs / run priority / run rr / logs
+    v
+AgentRuntime
+    |  agent table, log buffer, llm_enabled
+    v
+Ready selection
+    |  state == READY
+    +--------------------+--------------------+--------------------+
+    |                    |                    |
+    v                    v                    v
+FCFS scheduler      Priority scheduler    Round-robin scheduler
+id order            priority desc         quantum = 1
+    |                    |                    |
+    +--------------------+--------------------+
                          |
                          v
-              +---------------------+
-              |      TUI Loop       |
-              |  create/list/run    |
-              |  logs/demo/help     |
-              +----------+----------+
-                         |
-                         v
-              +---------------------+
-              |   AgentRuntime      |
-              | process table       |
-              | log ring buffer     |
-              | llm_enabled flag    |
-              | next agent id       |
-              +----------+----------+
-                         |
-             READY agents are selected
-                         |
-          +--------------+--------------+--------------+
-          |                             |              |
-          v                             v              v
- +-----------------+           +------------------+  +------------------+
- | FCFS Scheduler  |           | Priority Scheduler|  | RR Scheduler     |
- | id ascending    |           | priority desc     |  | quantum=1 slice  |
- +--------+--------+           +---------+---------+  +--------+---------+
-          |                              |                     |
-          +--------------+---------------+---------------------+
-                         |
-                         v
-              +---------------------+
-              |      Executor       |
-              | state transition    |
-              | quota check         |
-              | timeout simulation  |
-              | policy gate         |
-              | LLM broker call     |
-              +----------+----------+
-                         |
-                         v
-              +---------------------------+
-              | Result / Error / Log      |
-              | model output when enabled |
-              +---------------------------+
+Executor
+    |  state update
+    |  quota check
+    |  timeout check
+    |  policy check
+    |  LLM broker call if enabled
+    v
+Agent result / error / runtime log
 ```
 
-## Quick Start
-
-### macOS / Linux
+## 빠른 실행
 
 ```sh
 git clone https://github.com/cocojisoo/GarbageCollector_OS.git
@@ -123,58 +67,53 @@ git checkout codex/tui-mini-agent-os
 
 make
 make run
-# paste API key at startup, or press Enter for offline scheduler tests
 ```
 
-### Windows with MinGW/MSYS2
+실행하면 먼저 API key를 묻는다.
+
+```text
+api key:
+```
+
+Upstage/OpenAI 호환 키를 넣으면 agent가 실제 LLM broker를 호출한다. Enter만
+누르면 네트워크 호출 없이 스케줄러와 상태 전이만 확인하는 모드로 실행된다. 입력한 키는
+프로세스 환경 변수에만 넣고 파일로 저장하지 않는다.
+
+Windows 쪽은 MSYS2/MinGW 기준이다.
 
 ```sh
 mingw32-make CC=gcc EXEEXT=.exe
-build\\gcos-tui.exe
+build\gcos-tui.exe
 ```
 
-The Windows path targets MinGW/MSYS2 and uses the same console/TUI flow. The API
-broker expects a curl-compatible environment.
+## TUI 명령
 
-## TUI Commands
-
-Run `make run` and type commands at the `gcos>` prompt.
-
-| Command | Purpose |
+| 명령 | 동작 |
 | --- | --- |
-| `create` | Create a new agent task interactively |
-| `list` | Show the current process/agent table |
-| `run fcfs` | Run READY agents in creation order |
-| `run priority` | Run READY agents by priority, high value first |
-| `run rr` | Run READY agents with round-robin quantum scheduling |
-| `demo` | Load sample agents for scheduling, quota, and timeout demos |
-| `logs` | Show execution logs |
-| `clear` | Clear all agents and logs |
-| `help` | Show command help |
-| `quit` | Exit the TUI |
+| `create` | agent 생성 |
+| `list` | agent table 출력 |
+| `run fcfs` | 생성 순서대로 실행 |
+| `run priority` | priority 높은 순서대로 실행 |
+| `run rr` | quantum 1 기준 round-robin 실행 |
+| `demo` | scheduling/quota/timeout 예시 agent 생성 |
+| `logs` | execution log 출력 |
+| `clear` | agent와 log 초기화 |
+| `help` | 도움말 |
+| `quit` | 종료 |
 
-## Demo Scenarios
+## 데모 흐름
 
-### 1. Priority Scheduling Demo
+### Priority
 
 ```text
 gcos> demo
 gcos> run priority
 ```
 
-The demo creates four agents:
+`AgentB`의 priority가 가장 높아서 먼저 실행된다. quota를 넘긴 agent는 `ERROR`,
+`[SLOW]`가 붙은 agent는 `TIMEOUT`으로 끝난다.
 
-| Agent | Priority | Prompt | Expected Result |
-| --- | ---: | --- | --- |
-| AgentA | 3 | `Short summary task [CALL]` | DONE |
-| AgentB | 9 | `Urgent analysis task [CALL]` | DONE first |
-| AgentC | 5 | `Quota pressure [CALL] [CALL] [CALL]` | ERROR |
-| SlowOne | 4 | `Timeout demo [SLOW]` | TIMEOUT |
-
-Because priority scheduling runs the highest priority first, AgentB runs before
-AgentC, SlowOne, and AgentA.
-
-### 2. FCFS Scheduling Demo
+### FCFS
 
 ```text
 gcos> clear
@@ -182,10 +121,9 @@ gcos> demo
 gcos> run fcfs
 ```
 
-FCFS executes agents by creation order, so AgentA runs before AgentB even though
-AgentB has a higher priority.
+priority와 상관없이 생성 id 순서대로 실행된다.
 
-### 3. Round-Robin Scheduling Demo
+### Round Robin
 
 ```text
 gcos> clear
@@ -193,156 +131,104 @@ gcos> demo
 gcos> run rr
 ```
 
-Round Robin gives each READY agent one scheduling quantum at a time. In offline
-mode, each `[CALL]` marker is treated as one unit of remaining work, so a
-multi-call agent yields back to READY until its units are complete. If LLM mode
-is enabled, the scheduler still chooses the next agent by RR order, then the
-LLM HTTP call runs atomically for that dispatch.
+offline 모드에서는 `[CALL]` 하나를 작업 단위 하나로 보고, agent가 한 quantum을
+쓴 뒤 아직 일이 남아 있으면 다시 `READY`로 돌아간다. LLM 모드에서는 HTTP 호출을
+중간에 끊을 수 없으므로 RR이 agent 선택 순서를 정하고, 선택된 agent의 LLM 호출은
+한 번에 끝낸다.
 
-### 4. LLM-Backed Agent Demo
+### LLM 실행
 
 ```text
-api key: up_... or sk-...
+api key: up_... 또는 sk-...
 gcos> create
 name: Explainer
-prompt: llm: explain FCFS scheduling in two Korean sentences
+prompt: llm: FCFS scheduling을 한국어 두 문장으로 설명해줘
 priority 1-10 [5]: 5
 timeout seconds 1-30 [3]: 10
 quota 1-20 [2]: 1
 gcos> run priority
 ```
 
-The executor records the agent as RUNNING, consumes quota, calls the configured
-LLM broker, then stores the model response in `result`.
+실행이 끝나면 `result`에 모델 응답이 들어간다.
 
-### 5. Quota Error Demo
+## OS 개념 매핑
 
-AgentC contains three `[CALL]` markers but has quota 2. The runtime detects that
-required calls exceed the quota and moves AgentC to ERROR.
-
-```text
-quota exceeded: required=3 quota=2
-```
-
-### 6. Timeout Demo
-
-SlowOne contains `[SLOW]`. The executor simulates work that exceeds the timeout
-and moves the agent to TIMEOUT.
-
-```text
-timeout: required=2 timeout=1
-```
-
-### 7. Log Demo
-
-```text
-gcos> logs
-```
-
-The log shows runtime events such as agent creation, scheduler start, agent
-start, LLM broker call, completion, quota error, timeout, and scheduler finish.
-
-## Operating System Concepts -> Code
-
-| OS Concept | File | Implementation |
+| OS 개념 | 코드 | 구현 방식 |
 | --- | --- | --- |
-| Process | `include/gcos.h` | `Agent` struct |
+| Process | `include/gcos.h` | `Agent` 구조체 |
 | PID | `include/gcos.h` | `Agent.id` |
-| PCB / ACB | `include/gcos.h` | state, priority, timeout, quota, timestamps, result, error |
-| Process State | `include/gcos.h` / `src/agent.c` | READY, RUNNING, DONE, TIMEOUT, ERROR |
-| Ready Queue | `src/agent.c` | READY agents are copied into a scheduler input array |
-| FCFS Scheduling | `src/agent.c` | `runtime_run_fcfs`, sorted by creation id |
-| Priority Scheduling | `src/agent.c` | `runtime_run_priority`, sorted by priority then id |
-| Round-Robin Scheduling | `src/agent.c` | `runtime_run_round_robin`, quantum=1 local time-slice simulation |
-| CPU Burst Simulation | `src/agent.c` | normal prompt runs for one simulated second |
-| Timeout | `src/agent.c` | `[SLOW]` forces timeout path |
-| Resource Quota | `src/agent.c` | `[CALL]` count checked against `Agent.quota` |
-| LLM Broker | `src/agent.c` + `src/codex_broker.c` | TUI startup API key enables model calls during execution |
-| Trace Log | `src/agent.c` | `runtime_log` ring buffer |
-| Dashboard | `src/tui.c` | process table, logs, help, demo output |
-| Policy Gate | `src/policy.c` | typed action parser and sensitive action blocking |
+| PCB | `include/gcos.h` | state, priority, timeout, quota, result, error |
+| Process state | `include/gcos.h`, `src/agent.c` | READY/RUNNING/DONE/TIMEOUT/ERROR |
+| Ready queue | `src/agent.c` | `READY` agent만 골라 scheduler input 구성 |
+| FCFS | `src/agent.c` | id 오름차순 |
+| Priority | `src/agent.c` | priority 내림차순, 동률이면 id 오름차순 |
+| Round Robin | `src/agent.c` | quantum 1 기준 반복 실행 |
+| Resource quota | `src/agent.c` | `[CALL]` count와 `Agent.quota` 비교 |
+| Timeout | `src/agent.c` | `[SLOW]`로 timeout 경로 재현 |
+| LLM broker | `src/agent.c`, `src/codex_broker.c` | API key가 있으면 agent 실행 중 모델 호출 |
+| Policy gate | `src/policy.c` | action marker 파싱 후 위험 요청 차단 |
+| Trace log | `src/agent.c` | ring buffer log |
+| Dashboard | `src/tui.c` | terminal table과 logs |
 
-## Technical Stack
-
-- C11
-- Makefile build
-- Terminal TUI using standard input/output
-- POSIX-compatible code path for macOS/Linux
-- MinGW/MSYS2-targeted Windows code path
-- Upstage/OpenAI-compatible API broker through `curl`
-- Startup API key input; keys are kept in process environment and not written to
-  generated files
-- No GUI framework
-- No browser dashboard
-- No generated API key files
-
-## Repository Structure
+## 파일 구조
 
 ```text
 GarbageCollector_OS/
 ├── include/
-│   └── gcos.h              # shared structs, enums, function declarations
+│   └── gcos.h
 ├── src/
-│   ├── main.c              # program entry point and smoke-test flags
-│   ├── tui.c               # terminal UI, API-key setup, command loop
-│   ├── agent.c             # agent table, schedulers, executor, logs
-│   ├── policy.c            # action marker parser and safety policy
-│   └── codex_broker.c      # Upstage/OpenAI-compatible LLM API broker
+│   ├── main.c
+│   ├── tui.c
+│   ├── agent.c
+│   ├── policy.c
+│   └── codex_broker.c
 ├── docs/
 │   ├── dev-brief.md
 │   ├── project-alignment.md
 │   ├── tui-architecture.md
 │   └── gcos-roadmap.md
 ├── scripts/
-│   └── gcos-context        # quick project summary
+│   └── gcos-context
 ├── Makefile
-├── README.md
-├── .gitignore
-└── .ignore
+└── README.md
 ```
 
-## Build Targets
+## 빌드와 테스트
 
-| Target | Purpose |
+| 명령 | 내용 |
 | --- | --- |
-| `make` | Build `build/gcos-tui` |
-| `make run` | Build and start the TUI |
-| `make check` | Run local smoke tests |
-| `make portable-check` | Syntax-check all C sources |
-| `make context` | Print a short project summary |
-| `make clean` | Remove build outputs |
+| `make` | `build/gcos-tui` 빌드 |
+| `make run` | TUI 실행 |
+| `make check` | 기본 smoke test 실행 |
+| `make portable-check` | C source syntax check |
+| `make api-check` | 실제 API key로 LLM 호출 확인 |
+| `make context` | 프로젝트 요약 출력 |
+| `make clean` | 빌드 산출물 삭제 |
 
-## Test Coverage
+`make check`에 들어있는 항목:
 
-`make check` currently runs:
-
-| Test Flag | What It Checks |
+| 항목 | 확인 내용 |
 | --- | --- |
-| `--self-test` | policy guard, sensitive paths, invalid broker backend |
+| `--self-test` | policy guard, 민감 경로 차단, 잘못된 broker backend |
 | `--os-demo-smoke` | priority order, quota error, kernel policy block |
-| `--tui-smoke` | priority scheduling states for sample agents |
-| `--rr-smoke` | round-robin scheduling, yield, quota behavior |
-| `--input-smoke` | TUI input path without live API calls |
-| `--wrap-smoke` | long text setup for terminal wrapping |
-| `--api-config-smoke` | offline API config parsing without real API calls |
+| `--tui-smoke` | TUI scheduling 상태 |
+| `--rr-smoke` | round-robin scheduling과 quota |
+| `--input-smoke` | 입력 경로 기본 동작 |
+| `--wrap-smoke` | 긴 텍스트 출력 준비 |
+| `--api-config-smoke` | API 설정 파싱 |
 
-## Notes for Presentation
+## 발표 때 잡을 포인트
 
-When presenting this project, the main point is not that it is "just running on
-an OS." The point is that the project maps OS concepts into individually
-testable runtime components:
+이 프로젝트에서 중요한 건 “운영체제 위에서 실행된다”가 아니라, agent runtime 안에
+운영체제 개념을 직접 대응시켰다는 점이다.
 
-- agent as process
-- id as PID
-- Agent Control Block as PCB
-- runtime table as process table
-- READY filtering as ready queue
-- FCFS, priority, and round-robin scheduling as scheduler policies
-- `[CALL]` quota as resource management
-- `[SLOW]` timeout as process timeout
-- startup API key plus broker call as LLM execution path
-- runtime logs as trace logs
-- TUI output as dashboard/process table
-
-The core assignment demo should focus on scheduling, state transitions, quota,
-timeout, LLM execution, and logs.
+- agent = process
+- id = PID
+- `Agent` 구조체 = PCB
+- `READY` 필터링 = ready queue
+- FCFS/Priority/RR = scheduler policy
+- `[CALL]` = resource quota
+- `[SLOW]` = timeout
+- API key broker = LLM agent execution
+- runtime log = trace log
+- TUI = process table/dashboard
