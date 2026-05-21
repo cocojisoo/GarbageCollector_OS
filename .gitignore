@@ -1,0 +1,15 @@
+build/
+*.o
+*.obj
+*.exe
+*.dSYM/
+
+__pycache__/
+*.pyc
+logs/
+
+.DS_Store
+.codex/
+.omx/
+compile_commands.json
+*.plist
